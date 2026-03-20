@@ -1,48 +1,71 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
+"""
+Simulation / scene configuration for the two-wheeled inverted-pendulum env.
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG
+Control parameters (gains, physical constants, controller logic) live in
+control.py, not here.  This file only holds simulation timing, scene setup,
+the robot asset reference, and the IMU sensor path.
+"""
 
-from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ImuCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
+
+from .robot_cfg import TWO_WHEELED_ROBOT_CFG
 
 
 @configclass
 class TwowheeledrobotEnvCfg(DirectRLEnvCfg):
-    # env
-    decimation = 2
-    episode_length_s = 5.0
-    # - spaces definition
-    action_space = 1
-    observation_space = 4
-    state_space = 0
+    # ------------------------------------------------------------------ #
+    # Simulation timing                                                   #
+    # ------------------------------------------------------------------ #
+    decimation: int = 4            # physics steps per control step
+    episode_length_s: float = 30.0
 
-    # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+    # No external policy — control is computed inside the env via control.py.
+    action_space: int = 0
+    # Observations: [pitch, pitch_rate, forward_vel, position, yaw_rate, ω_L, ω_R]
+    observation_space: int = 7
+    state_space: int = 0
 
-    # robot(s)
-    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    sim: SimulationCfg = SimulationCfg(dt=1.0 / 200.0, render_interval=decimation)
 
-    # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
+    # ------------------------------------------------------------------ #
+    # Robot                                                               #
+    # ------------------------------------------------------------------ #
+    robot_cfg = TWO_WHEELED_ROBOT_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot"
+    )
 
-    # custom parameters/scales
-    # - controllable joint
-    cart_dof_name = "slider_to_cart"
-    pole_dof_name = "cart_to_pole"
-    # - action scale
-    action_scale = 100.0  # [N]
-    # - reward scales
-    rew_scale_alive = 1.0
-    rew_scale_terminated = -2.0
-    rew_scale_pole_pos = -1.0
-    rew_scale_cart_vel = -0.01
-    rew_scale_pole_vel = -0.005
-    # - reset states/conditions
-    initial_pole_angle_range = [-0.25, 0.25]  # pole angle sample range on reset [rad]
-    max_cart_pos = 3.0  # reset if cart exceeds this position [m]
+    # ------------------------------------------------------------------ #
+    # Scene                                                               #
+    # ------------------------------------------------------------------ #
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=1,            # pure control — single robot instance
+        env_spacing=4.0,
+        replicate_physics=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    # IMU sensor                                                          #
+    #                                                                     #
+    # prim_path must match the Imu_Sensor xform inside World0.usd.       #
+    # Run once and print the prim tree if the path needs adjusting:      #
+    #   stage = omni.usd.get_context().get_stage()                       #
+    #   for p in stage.Traverse(): print(p.GetPath())                    #
+    # ------------------------------------------------------------------ #
+    imu: ImuCfg = ImuCfg(
+        prim_path=(
+            "/World/envs/env_.*/Robot"
+            "/SimplifiedBipedMainAssembly"
+            "/SimplifiedBipedMainAssembly"
+            "/Platform_Group/BNO080"
+        ),
+        visualizer_cfg=None,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Termination                                                         #
+    # ------------------------------------------------------------------ #
+    max_pitch_deg: float = 45.0   # episode ends if robot tilts beyond this
