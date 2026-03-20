@@ -23,6 +23,7 @@ from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
 from .control import RobotController
+from .sim_params import GROUND_STATIC_FRICTION, GROUND_DYNAMIC_FRICTION, GROUND_RESTITUTION
 
 
 class TwowheeledrobotEnv(DirectRLEnv):
@@ -75,14 +76,14 @@ class TwowheeledrobotEnv(DirectRLEnv):
         self.imu = Imu(self.cfg.imu)
         self.scene.sensors["imu"] = self.imu
 
-        # Ground plane — high friction for DDSM115 rubber wheels on hard floor
+        # Ground plane — friction/restitution come from sim_params.py
         spawn_ground_plane(
             prim_path="/World/ground",
             cfg=GroundPlaneCfg(
                 physics_material=RigidBodyMaterialCfg(
-                    static_friction=0.8,
-                    dynamic_friction=0.7,
-                    restitution=0.0,
+                    static_friction=GROUND_STATIC_FRICTION,
+                    dynamic_friction=GROUND_DYNAMIC_FRICTION,
+                    restitution=GROUND_RESTITUTION,
                 )
             ),
         )
@@ -124,21 +125,30 @@ class TwowheeledrobotEnv(DirectRLEnv):
             self._debug_step_count += 1
             if self._debug_step_count >= self._debug_print_interval:
                 self._debug_step_count = 0
-                from .control import IMU_PITCH_AXIS, WHEEL_RADIUS
-                grav   = proj_grav[0]           # (3,)
-                av     = ang_vel_b[0]           # (3,)
-                # projected_gravity_b is a unit vector pointing toward gravity
-                # in body frame.  pitch ≈ arcsin(grav[0]) for small angles.
-                pitch_rad  = math.asin(float(grav[0].clamp(-1.0, 1.0)))
-                pitch_deg  = math.degrees(pitch_rad)
-                roll_rad   = math.asin(float(grav[1].clamp(-1.0, 1.0)))
-                roll_deg   = math.degrees(roll_rad)
-                pitch_rate = float(av[IMU_PITCH_AXIS])
-                yaw_rate   = float(av[2])
-                fwd_vel    = float((omega_left[0] + omega_right[0]) * 0.5 * WHEEL_RADIUS)
+                from .control import (
+                    IMU_TILT_GRAVITY_AXIS, IMU_TILT_RATE_AXIS,
+                    IMU_YAW_RATE_AXIS, WHEEL_RADIUS,
+                )
+                grav = proj_grav[0]   # (3,)
+                av   = ang_vel_b[0]   # (3,)
+
+                # Forward/backward lean — confirmed as grav[1] ("roll" on BNO080)
+                tilt_rad  = math.asin(float(grav[IMU_TILT_GRAVITY_AXIS].clamp(-1.0, 1.0)))
+                tilt_deg  = math.degrees(tilt_rad)
+                tilt_rate = float(av[IMU_TILT_RATE_AXIS])
+                yaw_rate  = float(av[IMU_YAW_RATE_AXIS])
+
+                # Absolute yaw from root quaternion (w, x, y, z)
+                q = self.robot.data.root_quat_w[0]   # (4,)  w,x,y,z
+                yaw_deg = math.degrees(math.atan2(
+                    2.0 * (float(q[0]) * float(q[3]) + float(q[1]) * float(q[2])),
+                    1.0 - 2.0 * (float(q[2])**2 + float(q[3])**2)
+                ))
+
+                fwd_vel = float((omega_left[0] + omega_right[0]) * 0.5 * WHEEL_RADIUS)
                 print(
-                    f"[IMU]  pitch={pitch_deg:+7.2f}°  roll={roll_deg:+7.2f}°  "
-                    f"pitch_rate={pitch_rate:+6.3f} rad/s  yaw_rate={yaw_rate:+6.3f} rad/s  "
+                    f"[IMU]  tilt={tilt_deg:+7.2f}°  yaw={yaw_deg:+7.2f}°  "
+                    f"tilt_rate={tilt_rate:+6.3f} rad/s  yaw_rate={yaw_rate:+6.3f} rad/s  "
                     f"fwd_vel={fwd_vel:+6.3f} m/s  "
                     f"τ_L={float(torque_left[0]):+5.2f} Nm  τ_R={float(torque_right[0]):+5.2f} Nm"
                 )
@@ -154,11 +164,11 @@ class TwowheeledrobotEnv(DirectRLEnv):
         ang_vel_b = self.imu.data.ang_vel_b              # (N, 3)
         wheel_vel = self.robot.data.joint_vel[:, self._wheel_ids]  # (N, 2)
 
-        from .control import IMU_PITCH_AXIS, WHEEL_RADIUS
+        from .control import IMU_TILT_GRAVITY_AXIS, IMU_TILT_RATE_AXIS, IMU_YAW_RATE_AXIS, WHEEL_RADIUS
 
-        pitch       = proj_grav[:, 0].unsqueeze(1)                              # (N,1)
-        pitch_rate  = ang_vel_b[:, IMU_PITCH_AXIS].unsqueeze(1)                 # (N,1)
-        yaw_rate    = ang_vel_b[:, 2].unsqueeze(1)                              # (N,1)
+        pitch       = proj_grav[:, IMU_TILT_GRAVITY_AXIS].unsqueeze(1)          # (N,1)
+        pitch_rate  = ang_vel_b[:, IMU_TILT_RATE_AXIS].unsqueeze(1)             # (N,1)
+        yaw_rate    = ang_vel_b[:, IMU_YAW_RATE_AXIS].unsqueeze(1)              # (N,1)
         forward_vel = ((wheel_vel[:, 0] + wheel_vel[:, 1]) * 0.5
                        * WHEEL_RADIUS).unsqueeze(1)                             # (N,1)
         position    = self._controller._pos_estimate.unsqueeze(1)               # (N,1)
@@ -174,15 +184,17 @@ class TwowheeledrobotEnv(DirectRLEnv):
     # Rewards (minimal — this env is a controller, not a trainer)            #
     # ---------------------------------------------------------------------- #
     def _get_rewards(self) -> torch.Tensor:
-        pitch = self.imu.data.projected_gravity_b[:, 0]
-        return -pitch.abs()
+        from .control import IMU_TILT_GRAVITY_AXIS
+        tilt = self.imu.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS]
+        return -tilt.abs()
 
     # ---------------------------------------------------------------------- #
     # Episode termination                                                     #
     # ---------------------------------------------------------------------- #
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        pitch   = self.imu.data.projected_gravity_b[:, 0]
-        fallen  = pitch.abs() > math.sin(self._max_pitch)
+        from .control import IMU_TILT_GRAVITY_AXIS
+        tilt    = self.imu.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS]
+        fallen  = tilt.abs() > math.sin(self._max_pitch)
         timeout = self.episode_length_buf >= self.max_episode_length - 1
         return fallen, timeout
 

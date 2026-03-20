@@ -13,6 +13,10 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
 from .robot_cfg import TWO_WHEELED_ROBOT_CFG
+from .sim_params import (
+    PHYSICS_DT, CONTROL_DECIMATION,
+    GROUND_STATIC_FRICTION, GROUND_DYNAMIC_FRICTION, GROUND_RESTITUTION,
+)
 
 
 @configclass
@@ -20,16 +24,17 @@ class TwowheeledrobotEnvCfg(DirectRLEnvCfg):
     # ------------------------------------------------------------------ #
     # Simulation timing                                                   #
     # ------------------------------------------------------------------ #
-    decimation: int = 4            # physics steps per control step
+    # Control sample time = PHYSICS_DT * CONTROL_DECIMATION = 20 ms
+    decimation: int = CONTROL_DECIMATION
     episode_length_s: float = 30.0
 
     # No external policy — control is computed inside the env via control.py.
     action_space: int = 0
-    # Observations: [pitch, pitch_rate, forward_vel, position, yaw_rate, ω_L, ω_R]
+    # Observations: [tilt, tilt_rate, forward_vel, position, yaw_rate, ω_L, ω_R]
     observation_space: int = 7
     state_space: int = 0
 
-    sim: SimulationCfg = SimulationCfg(dt=1.0 / 200.0, render_interval=decimation)
+    sim: SimulationCfg = SimulationCfg(dt=PHYSICS_DT, render_interval=CONTROL_DECIMATION)
 
     # ------------------------------------------------------------------ #
     # Robot                                                               #

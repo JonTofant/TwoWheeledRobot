@@ -15,6 +15,10 @@ from isaaclab.actuators import ImplicitActuatorCfg
 import isaaclab.sim as sim_utils
 
 from .control import WHEEL_DRIVE_STIFFNESS, WHEEL_DRIVE_DAMPING, CYBERGEAR_STIFFNESS, CYBERGEAR_DAMPING
+from .sim_params import (
+    LINEAR_DAMPING, ANGULAR_DAMPING,
+    SOLVER_POSITION_ITERS, SOLVER_VELOCITY_ITERS,
+)
 
 # USD path — ColectedUSD_v2/World0.usd lives inside docs/
 _USD_PATH = os.path.normpath(os.path.join(
@@ -30,16 +34,16 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
+            linear_damping=LINEAR_DAMPING,
+            angular_damping=ANGULAR_DAMPING,
             max_linear_velocity=10.0,
             max_angular_velocity=50.0,
             max_depenetration_velocity=1.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=False,
-            solver_position_iteration_count=8,
-            solver_velocity_iteration_count=1,
+            solver_position_iteration_count=SOLVER_POSITION_ITERS,
+            solver_velocity_iteration_count=SOLVER_VELOCITY_ITERS,
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(

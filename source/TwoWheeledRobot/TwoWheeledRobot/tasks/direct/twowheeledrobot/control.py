@@ -50,11 +50,13 @@ CYBERGEAR_DAMPING:   float = 1   # Nm·s/rad — tune for your CyberGear spec
 WHEEL_RADIUS: float = 0.0575   # m  — DDSM115: 115 mm diameter → 57.5 mm radius
 WHEEL_BASE:   float = 0.30     # m  — lateral distance between wheel contact points
 
-# Which index of ang_vel_b is the pitch-rate axis?
+# Which index of projected_gravity_b and ang_vel_b is the forward/backward tilt axis?
+# Confirmed from live debug: projected_gravity_b[1] (Y) tracks the robot leaning
+# forward/backward (what the BNO080 reports as "roll").
 # 0 = X,  1 = Y,  2 = Z
-# For a robot whose wheels roll along the body X-axis, pitch rotates about
-# body Y → use index 1.
-IMU_PITCH_AXIS: int = 1
+IMU_TILT_GRAVITY_AXIS: int = 1   # index into projected_gravity_b for forward lean
+IMU_TILT_RATE_AXIS:    int = 1   # index into ang_vel_b for forward lean rate
+IMU_YAW_RATE_AXIS:     int = 2   # index into ang_vel_b for yaw rate
 
 # =========================================================================== #
 #  Controller parameters                                                       #
@@ -143,10 +145,10 @@ class RobotController:
         # ------------------------------------------------------------------ #
         # Extract states from sensors                                         #
         # ------------------------------------------------------------------ #
-        # pitch ≈ sin(pitch_angle) from gravity projection (X component)
-        pitch      = projected_gravity_b[:, 0]           # (N,)
-        pitch_rate = ang_vel_b[:, IMU_PITCH_AXIS]         # (N,)  rad/s
-        yaw_rate   = ang_vel_b[:, 2]                      # (N,)  rad/s
+        # tilt ≈ sin(lean_angle) from gravity projection — confirmed axis 1 (Y)
+        pitch      = projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS]  # (N,)
+        pitch_rate = ang_vel_b[:, IMU_TILT_RATE_AXIS]               # (N,)  rad/s
+        yaw_rate   = ang_vel_b[:, IMU_YAW_RATE_AXIS]                # (N,)  rad/s
 
         # Forward linear velocity from average wheel angular speed
         forward_vel = (omega_left + omega_right) * 0.5 * WHEEL_RADIUS  # (N,) m/s
@@ -180,7 +182,7 @@ class RobotController:
         # ------------------------------------------------------------------ #
         # Revolute_13 (left) and Revolute_6 (right) are mirrored in the USD —
         # negate the right wheel so both push the robot in the same direction.
-        torque_left  =  (base_torque + yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
-        torque_right = -(base_torque - yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
+        torque_left  = -(base_torque + yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
+        torque_right = (base_torque - yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
 
         return torque_left, torque_right
