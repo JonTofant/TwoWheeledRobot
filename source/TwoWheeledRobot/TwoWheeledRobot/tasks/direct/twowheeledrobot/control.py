@@ -36,6 +36,13 @@ import torch
 WHEEL_DRIVE_STIFFNESS: float = 0.0    # Nm/rad
 WHEEL_DRIVE_DAMPING:   float = 0.1    # Nm·s/rad
 
+# CyberGear joints (front_left, front_right, back_left, back_right)
+# USD keeps these at 0; Python sets them here at simulation start.
+# stiffness > 0  → position spring (position control mode)
+# damping   > 0  → viscous damping
+CYBERGEAR_STIFFNESS: float = 0.0    # Nm/rad  — tune for your CyberGear spec
+CYBERGEAR_DAMPING:   float = 0.0    # Nm·s/rad — tune for your CyberGear spec
+
 # =========================================================================== #
 #  Physical constants — match your real robot                                 #
 # =========================================================================== #
@@ -57,7 +64,7 @@ IMU_PITCH_AXIS: int = 1
 USE_LQR: bool = True
 
 # Maximum torque sent to each wheel (matches DDSM115 peak torque)
-TORQUE_LIMIT: float = 6.0   # Nm
+TORQUE_LIMIT: float = 2.0   # Nm
 
 # --- LQR gains [k_θ, k_θ̇, k_v, k_pos] -----------------------------------
 # State: [pitch_angle (rad), pitch_rate (rad/s), forward_vel (m/s), position (m)]

@@ -14,7 +14,7 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 import isaaclab.sim as sim_utils
 
-from .control import WHEEL_DRIVE_STIFFNESS, WHEEL_DRIVE_DAMPING
+from .control import WHEEL_DRIVE_STIFFNESS, WHEEL_DRIVE_DAMPING, CYBERGEAR_STIFFNESS, CYBERGEAR_DAMPING
 
 # USD path — ColectedUSD_v2/World0.usd lives inside docs/
 _USD_PATH = os.path.normpath(os.path.join(
@@ -64,6 +64,18 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
             velocity_limit=15.7,                               # rad/s — no-load at 24V
             stiffness=WHEEL_DRIVE_STIFFNESS,
             damping=WHEEL_DRIVE_DAMPING,
+        ),
+        # ------------------------------------------------------------------ #
+        # CyberGear top motors — position/torque controlled.                 #
+        # front_left, front_right, back_left, back_right                     #
+        # Tune CYBERGEAR_STIFFNESS / CYBERGEAR_DAMPING in control.py.        #
+        # ------------------------------------------------------------------ #
+        "cybergear_joints": ImplicitActuatorCfg(
+            joint_names_expr=["front_left", "front_right", "back_left", "back_right"],
+            effort_limit_sim=12.0,                             # Nm — CyberGear M5 peak
+            velocity_limit=30.0,                               # rad/s — adjust to spec
+            stiffness=CYBERGEAR_STIFFNESS,
+            damping=CYBERGEAR_DAMPING,
         ),
     },
 )
