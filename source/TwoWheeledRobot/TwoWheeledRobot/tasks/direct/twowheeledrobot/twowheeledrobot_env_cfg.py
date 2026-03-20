@@ -30,8 +30,8 @@ class TwowheeledrobotEnvCfg(DirectRLEnvCfg):
 
     # No external policy — control is computed inside the env via control.py.
     action_space: int = 0
-    # Observations: [tilt, tilt_rate, forward_vel, position, yaw_rate, ω_L, ω_R]
-    observation_space: int = 7
+    # Observations: [tilt, tilt_rate, forward_vel, yaw_rate, ω_L, ω_R]
+    observation_space: int = 6
     state_space: int = 0
 
     sim: SimulationCfg = SimulationCfg(dt=PHYSICS_DT, render_interval=CONTROL_DECIMATION)

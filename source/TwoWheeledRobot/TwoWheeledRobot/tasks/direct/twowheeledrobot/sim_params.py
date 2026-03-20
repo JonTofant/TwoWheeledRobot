@@ -39,8 +39,8 @@ CONTROL_DECIMATION:   int   = 4             # control sample time = 5ms × 4 = 2
 # =========================================================================== #
 #  Ground plane                                                                #
 # =========================================================================== #
-GROUND_STATIC_FRICTION:  float = 0.8   # rubber on hard floor — realistic range 0.6–1.0
-GROUND_DYNAMIC_FRICTION: float = 0.7
+GROUND_STATIC_FRICTION:  float = 0.35  # laminate — realistic range 0.3–0.4
+GROUND_DYNAMIC_FRICTION: float = 0.25  # laminate — slightly lower than static
 GROUND_RESTITUTION:      float = 0.0   # no bounce
 
 # =========================================================================== #

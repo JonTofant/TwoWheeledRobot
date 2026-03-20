@@ -14,6 +14,9 @@ import math
 import torch
 from collections.abc import Sequence
 
+import carb.input
+import omni.appwindow
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
@@ -22,7 +25,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
-from .control import RobotController
+from .control import RobotController, FWD_VEL_MAX, FWD_VEL_RAMP, FWD_VEL_DECAY, YAW_RATE_MAX
 from .sim_params import GROUND_STATIC_FRICTION, GROUND_DYNAMIC_FRICTION, GROUND_RESTITUTION
 
 
@@ -61,9 +64,14 @@ class TwowheeledrobotEnv(DirectRLEnv):
         self._debug_print_interval: int = 50   # change to 0 to disable
         self._debug_step_count: int = 0
 
+        # ---- Keyboard (WASD teleop) --------------------------------------- #
+        self._input    = carb.input.acquire_input_interface()
+        self._keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+
         print(f"[TwoWheeledRobot] Wheel joint IDs — Left: {self._left_wheel_ids}, "
               f"Right: {self._right_wheel_ids}")
         print(f"[TwoWheeledRobot] Control dt = {dt:.4f} s")
+        print("[TwoWheeledRobot] WASD teleop active — W/S = forward/back, A/D = turn left/right")
 
     # ---------------------------------------------------------------------- #
     # Scene setup                                                             #
@@ -95,10 +103,48 @@ class TwowheeledrobotEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     # ---------------------------------------------------------------------- #
+    # Keyboard teleop                                                         #
+    # ---------------------------------------------------------------------- #
+    def _read_keyboard(self) -> None:
+        """Read WASD state and ramp controller setpoints."""
+        Ki   = carb.input.KeyboardInput
+        held = lambda k: self._input.get_keyboard_value(self._keyboard, k) > 0.0
+        dt   = self.cfg.sim.dt * self.cfg.decimation
+
+        w = held(Ki.W)
+        s = held(Ki.S)
+        a = held(Ki.A)
+        d = held(Ki.D)
+
+        # W/S → ramp vel_cmd up while held, decay to 0 on release
+        v = self._controller.vel_cmd
+        if w and not s:
+            v = min(v + FWD_VEL_RAMP * dt,  FWD_VEL_MAX)
+        elif s and not w:
+            v = max(v - FWD_VEL_RAMP * dt, -FWD_VEL_MAX)
+        else:
+            # decay toward zero
+            if v > 0:
+                v = max(v - FWD_VEL_DECAY * dt, 0.0)
+            elif v < 0:
+                v = min(v + FWD_VEL_DECAY * dt, 0.0)
+        self._controller.vel_cmd = v
+
+        # A/D → yaw rate command (A = turn left = positive yaw rate)
+        if a and not d:
+            self._controller.yaw_rate_cmd = YAW_RATE_MAX
+        elif d and not a:
+            self._controller.yaw_rate_cmd = -YAW_RATE_MAX
+        else:
+            self._controller.yaw_rate_cmd = 0.0
+
+    # ---------------------------------------------------------------------- #
     # Control step                                                            #
     # ---------------------------------------------------------------------- #
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """Read sensors, call control.py, apply wheel torques."""
+
+        self._read_keyboard()
 
         # Raw sensor data
         proj_grav = self.imu.data.projected_gravity_b   # (N, 3)
@@ -149,7 +195,7 @@ class TwowheeledrobotEnv(DirectRLEnv):
                 print(
                     f"[IMU]  tilt={tilt_deg:+7.2f}°  yaw={yaw_deg:+7.2f}°  "
                     f"tilt_rate={tilt_rate:+6.3f} rad/s  yaw_rate={yaw_rate:+6.3f} rad/s  "
-                    f"fwd_vel={fwd_vel:+6.3f} m/s  "
+                    f"fwd_vel={fwd_vel:+6.3f} m/s  vel_cmd={self._controller.vel_cmd:+6.3f} m/s  "
                     f"τ_L={float(torque_left[0]):+5.2f} Nm  τ_R={float(torque_right[0]):+5.2f} Nm"
                 )
 
@@ -171,12 +217,10 @@ class TwowheeledrobotEnv(DirectRLEnv):
         yaw_rate    = ang_vel_b[:, IMU_YAW_RATE_AXIS].unsqueeze(1)              # (N,1)
         forward_vel = ((wheel_vel[:, 0] + wheel_vel[:, 1]) * 0.5
                        * WHEEL_RADIUS).unsqueeze(1)                             # (N,1)
-        position    = self._controller._pos_estimate.unsqueeze(1)               # (N,1)
-
         obs = torch.cat(
-            [pitch, pitch_rate, forward_vel, position, yaw_rate, wheel_vel],
+            [pitch, pitch_rate, forward_vel, yaw_rate, wheel_vel],
             dim=-1,
-        )  # (N, 7)  [pitch, pitch_rate, fwd_vel, pos, yaw_rate, ω_L, ω_R]
+        )  # (N, 6)  [tilt, tilt_rate, fwd_vel, yaw_rate, ω_L, ω_R]
 
         return {"policy": obs}
 

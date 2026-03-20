@@ -7,8 +7,8 @@ This is the single place to tune everything:
   - Physical constants (wheel geometry, sensor axis mapping)
   - Controller parameters (LQR gains, PD gains, yaw, torque limits)
 
-The ``RobotController`` class is stateful (holds the odometry integrator)
-and is instantiated once inside the environment.  Each control step you call
+The ``RobotController`` class is stateless (no integrators).
+It is instantiated once inside the environment.  Each control step you call
 ``compute()`` with raw sensor data and get back left/right wheel torques.
 
 Sensor inputs available in ``compute()``:
@@ -68,20 +68,30 @@ USE_LQR: bool = True
 # Maximum torque sent to each wheel (matches DDSM115 peak torque)
 TORQUE_LIMIT: float = 2.0   # Nm
 
-# --- LQR gains [k_θ, k_θ̇, k_v, k_pos] -----------------------------------
-# State: [pitch_angle (rad), pitch_rate (rad/s), forward_vel (m/s), position (m)]
-# Computed offline by running: python compute_lqr_gains.py
-# Tune these for your specific robot mass / CoM height.
-LQR_K: list[float] = [-55.0, -10.5, -4.2, -3.0]
+# --- Inner loop: 2-state LQR [k_θ_err, k_θ̇] ------------------------------
+# State: [tilt_error (rad), tilt_rate (rad/s)]
+# tilt_error = actual_tilt − tilt_setpoint (from outer velocity loop)
+LQR_K: list[float] = [-55.0, -10.5]
+
+# --- Outer loop: velocity → tilt setpoint (cascade PD) -------------------
+# vel_error  = forward_vel − vel_cmd
+# tilt_setpoint = KP_VEL * vel_error + KD_VEL * d(vel_error)/dt
+# Positive vel_error (too slow) → positive tilt_setpoint (lean forward)
+KP_VEL: float = 0.25   # rad/(m/s)  — how much to lean per m/s of error
+KD_VEL: float = 0.05   # rad/(m/s²) — damping on velocity change
 
 # --- Fallback PD gains (used when USE_LQR = False) ------------------------
-KP_PITCH: float = 60.0   # Nm/rad       — pitch angle proportional gain
-KD_PITCH: float = 8.0    # Nm/(rad/s)   — pitch rate derivative gain
-KP_VEL:   float = 5.0    # Nm/(m/s)     — forward velocity feedback
+KP_PITCH: float = 60.0   # Nm/rad       — tilt proportional gain
+KD_PITCH: float = 8.0    # Nm/(rad/s)   — tilt rate derivative gain
 
 # --- Yaw (turning) controller — differential torque between wheels --------
 KP_YAW:       float = 2.0   # Nm/(rad/s) — yaw-rate damping
-YAW_SETPOINT: float = 0.0   # rad/s      — commanded yaw rate (0 = drive straight)
+
+# --- WASD teleop limits ---------------------------------------------------
+FWD_VEL_MAX:   float = 2.0    # m/s    — maximum forward/backward speed
+FWD_VEL_RAMP:  float = 2.0    # m/s²   — how fast vel_cmd ramps up while key held
+FWD_VEL_DECAY: float = 3.0    # m/s²   — how fast vel_cmd ramps back to 0 on release
+YAW_RATE_MAX:  float = 1.0    # rad/s  — A/D yaw rate command
 
 
 # =========================================================================== #
@@ -110,21 +120,25 @@ class RobotController:
         self.device   = device
         self.dt       = dt
 
-        # Wheel-odometry position integrator — one scalar per environment
-        self._pos_estimate = torch.zeros(num_envs, device=device)
-
-        # LQR gain row-vector  (1, 4)
+        # LQR gain row-vector  (1, 2)
         self._K = torch.tensor(
             LQR_K, device=device, dtype=torch.float32
         ).unsqueeze(0)
 
+        # Previous velocity error — for KD_VEL derivative term
+        self._prev_vel_error = torch.zeros(num_envs, device=device)
+
+        # WASD teleop setpoints — updated each step by the env from keyboard input
+        self.vel_cmd:      float = 0.0   # m/s    — W/S
+        self.yaw_rate_cmd: float = 0.0   # rad/s  — A/D
+
     # ---------------------------------------------------------------------- #
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
-        """Zero the odometry integrator for the given environments."""
+    def reset(self, env_ids=None) -> None:
+        """Reset velocity derivative state."""
         if env_ids is None:
-            self._pos_estimate[:] = 0.0
+            self._prev_vel_error[:] = 0.0
         else:
-            self._pos_estimate[env_ids] = 0.0
+            self._prev_vel_error[env_ids] = 0.0
 
     # ---------------------------------------------------------------------- #
     def compute(
@@ -153,29 +167,33 @@ class RobotController:
         # Forward linear velocity from average wheel angular speed
         forward_vel = (omega_left + omega_right) * 0.5 * WHEEL_RADIUS  # (N,) m/s
 
-        # Integrate position (wheel odometry)
-        self._pos_estimate = self._pos_estimate + forward_vel * self.dt  # (N,)
+        # ------------------------------------------------------------------ #
+        # Outer loop — velocity PD → tilt setpoint                          #
+        # ------------------------------------------------------------------ #
+        vel_error       = forward_vel - self.vel_cmd                 # (N,)
+        vel_error_dot   = (vel_error - self._prev_vel_error) / self.dt  # (N,)
+        self._prev_vel_error = vel_error.clone()
+
+        tilt_setpoint = KP_VEL * vel_error + KD_VEL * vel_error_dot  # (N,) rad
 
         # ------------------------------------------------------------------ #
-        # Balancing torque                                                    #
+        # Inner loop — 2-state balance                                       #
         # ------------------------------------------------------------------ #
+        tilt_error = pitch - tilt_setpoint                           # (N,)
+
         if USE_LQR:
-            state = torch.stack(
-                [pitch, pitch_rate, forward_vel, self._pos_estimate], dim=1
-            )  # (N, 4)
-            # u = -K @ x  →  element-wise multiply then sum over state dim
-            base_torque = -(state * self._K).sum(dim=1)   # (N,)
+            state = torch.stack([tilt_error, pitch_rate], dim=1)     # (N, 2)
+            base_torque = -(state * self._K).sum(dim=1)              # (N,)
         else:
             base_torque = (
-                -KP_PITCH * pitch
+                -KP_PITCH * tilt_error
                 - KD_PITCH * pitch_rate
-                - KP_VEL   * forward_vel
             )  # (N,)
 
         # ------------------------------------------------------------------ #
-        # Yaw correction — differential torque for steering                  #
+        # Yaw correction — A/D sets desired yaw rate                        #
         # ------------------------------------------------------------------ #
-        yaw_torque = -KP_YAW * (yaw_rate - YAW_SETPOINT)  # (N,)
+        yaw_torque = -KP_YAW * (yaw_rate - self.yaw_rate_cmd)  # (N,)
 
         # ------------------------------------------------------------------ #
         # Compose, saturate, and return                                       #
