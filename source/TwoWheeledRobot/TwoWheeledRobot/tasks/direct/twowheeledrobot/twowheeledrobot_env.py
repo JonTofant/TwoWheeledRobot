@@ -56,6 +56,10 @@ class TwowheeledrobotEnv(DirectRLEnv):
         # ---- Tilt limit -------------------------------------------------- #
         self._max_pitch = math.radians(self.cfg.max_pitch_deg)
 
+        # ---- Debug print throttle (print every N control steps) ---------- #
+        self._debug_print_interval: int = 50   # change to 0 to disable
+        self._debug_step_count: int = 0
+
         print(f"[TwoWheeledRobot] Wheel joint IDs — Left: {self._left_wheel_ids}, "
               f"Right: {self._right_wheel_ids}")
         print(f"[TwoWheeledRobot] Control dt = {dt:.4f} s")
@@ -114,6 +118,30 @@ class TwowheeledrobotEnv(DirectRLEnv):
         # Write effort targets: shape (N, 2) — [Revolute_13, Revolute_6]
         efforts = torch.stack([torque_left, torque_right], dim=1)
         self.robot.set_joint_effort_target(efforts, joint_ids=self._wheel_ids)
+
+        # ---- Debug printout (env 0 only, throttled) ---------------------- #
+        if self._debug_print_interval > 0:
+            self._debug_step_count += 1
+            if self._debug_step_count >= self._debug_print_interval:
+                self._debug_step_count = 0
+                from .control import IMU_PITCH_AXIS, WHEEL_RADIUS
+                grav   = proj_grav[0]           # (3,)
+                av     = ang_vel_b[0]           # (3,)
+                # projected_gravity_b is a unit vector pointing toward gravity
+                # in body frame.  pitch ≈ arcsin(grav[0]) for small angles.
+                pitch_rad  = math.asin(float(grav[0].clamp(-1.0, 1.0)))
+                pitch_deg  = math.degrees(pitch_rad)
+                roll_rad   = math.asin(float(grav[1].clamp(-1.0, 1.0)))
+                roll_deg   = math.degrees(roll_rad)
+                pitch_rate = float(av[IMU_PITCH_AXIS])
+                yaw_rate   = float(av[2])
+                fwd_vel    = float((omega_left[0] + omega_right[0]) * 0.5 * WHEEL_RADIUS)
+                print(
+                    f"[IMU]  pitch={pitch_deg:+7.2f}°  roll={roll_deg:+7.2f}°  "
+                    f"pitch_rate={pitch_rate:+6.3f} rad/s  yaw_rate={yaw_rate:+6.3f} rad/s  "
+                    f"fwd_vel={fwd_vel:+6.3f} m/s  "
+                    f"τ_L={float(torque_left[0]):+5.2f} Nm  τ_R={float(torque_right[0]):+5.2f} Nm"
+                )
 
     def _apply_action(self) -> None:
         self.robot.write_data_to_sim()

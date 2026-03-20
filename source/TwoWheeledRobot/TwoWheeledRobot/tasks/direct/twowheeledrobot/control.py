@@ -40,8 +40,8 @@ WHEEL_DRIVE_DAMPING:   float = 0.1    # Nm·s/rad
 # USD keeps these at 0; Python sets them here at simulation start.
 # stiffness > 0  → position spring (position control mode)
 # damping   > 0  → viscous damping
-CYBERGEAR_STIFFNESS: float = 0.0    # Nm/rad  — tune for your CyberGear spec
-CYBERGEAR_DAMPING:   float = 0.0    # Nm·s/rad — tune for your CyberGear spec
+CYBERGEAR_STIFFNESS: float = 10    # Nm/rad  — tune for your CyberGear spec
+CYBERGEAR_DAMPING:   float = 1   # Nm·s/rad — tune for your CyberGear spec
 
 # =========================================================================== #
 #  Physical constants — match your real robot                                 #
@@ -178,7 +178,9 @@ class RobotController:
         # ------------------------------------------------------------------ #
         # Compose, saturate, and return                                       #
         # ------------------------------------------------------------------ #
-        torque_left  = (base_torque + yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
-        torque_right = (base_torque - yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
+        # Revolute_13 (left) and Revolute_6 (right) are mirrored in the USD —
+        # negate the right wheel so both push the robot in the same direction.
+        torque_left  =  (base_torque + yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
+        torque_right = -(base_torque - yaw_torque).clamp(-TORQUE_LIMIT, TORQUE_LIMIT)
 
         return torque_left, torque_right
