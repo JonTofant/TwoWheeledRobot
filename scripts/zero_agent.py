@@ -29,8 +29,16 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import carb
 import gymnasium as gym
 import torch
+
+# Sync the simulation to wall-clock real time.
+# Without this, Isaac Sim runs as fast as the GPU allows (often 5-10× faster
+# than real time), making the animation appear in fast-forward.
+_settings = carb.settings.get_settings()
+_settings.set("/app/runLoops/main/rateLimitEnabled", True)
+_settings.set("/app/runLoops/main/rateLimitFrequency", 60)   # 60 FPS = real time
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg

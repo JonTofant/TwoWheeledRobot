@@ -39,8 +39,8 @@ CONTROL_DECIMATION:   int   = 4             # control sample time = 5ms × 4 = 2
 # =========================================================================== #
 #  Ground plane                                                                #
 # =========================================================================== #
-GROUND_STATIC_FRICTION:  float = 0.35  # laminate — realistic range 0.3–0.4
-GROUND_DYNAMIC_FRICTION: float = 0.25  # laminate — slightly lower than static
+GROUND_STATIC_FRICTION:  float = 0.8   # rubber on hard floor — realistic range 0.7–0.9
+GROUND_DYNAMIC_FRICTION: float = 0.6   # slightly lower than static; no slip below ~0.65 Nm/wheel
 GROUND_RESTITUTION:      float = 0.0   # no bounce
 
 # =========================================================================== #
@@ -61,4 +61,4 @@ ANGULAR_DAMPING: float = 0.0   # kg·m²/s
 #  Solver quality                                                              #
 # =========================================================================== #
 SOLVER_POSITION_ITERS: int = 8   # increase if joints vibrate or penetrate
-SOLVER_VELOCITY_ITERS: int = 1
+SOLVER_VELOCITY_ITERS: int = 4   # 1 under-resolves contact → artificial energy loss; 4 is minimum for accurate wheel-ground friction

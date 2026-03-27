@@ -31,6 +31,11 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=_USD_PATH,
         activate_contact_sensors=False,
+        # USD PhysicsMassAPI tokens exist but mass VALUES are broken (zero or unit-mismatch
+        # from OnShape export). Override uniformly: 4.5 kg / 11 bodies ≈ 0.41 kg each.
+        # The per-body breakdown isn't exact but the total mass is correct, which is what
+        # matters for wheel-contact dynamics.
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.41),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
@@ -63,7 +68,7 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
         # at 0 and Python sets the desired values at simulation start.       #
         # ------------------------------------------------------------------ #
         "wheel_joints": ImplicitActuatorCfg(
-            joint_names_expr=["Revolute_13", "Revolute_6"],   # left, right
+            joint_names_expr=["DDSM115_Levi", "DDSM115_Desni"],   # left, right
             effort_limit_sim=6.0,                              # Nm — DDSM115 peak
             velocity_limit=15.7,                               # rad/s — no-load at 24V
             stiffness=WHEEL_DRIVE_STIFFNESS,
