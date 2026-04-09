@@ -25,14 +25,18 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
+from .plotter import RealtimePlotter
 from .control import (
     RobotController,
     FWD_VEL_MAX, FWD_VEL_RAMP, FWD_VEL_DECAY, YAW_RATE_MAX,
     IMU_TILT_GRAVITY_AXIS, IMU_TILT_RATE_AXIS, IMU_YAW_RATE_AXIS,
     WHEEL_RADIUS,
-    set_leg_foot_position, L1_C, BASE_TARGET_Y,
 )
-from .sim_params import GROUND_STATIC_FRICTION, GROUND_DYNAMIC_FRICTION, GROUND_RESTITUTION
+from .kinematics import set_leg_foot_position, L1_C, BASE_TARGET_Y
+from .sim_params import (
+    GROUND_STATIC_FRICTION, GROUND_DYNAMIC_FRICTION, GROUND_RESTITUTION,
+    BATTERY_COM_OFFSET_X, BATTERY_COM_OFFSET_Y,
+)
 
 
 class TwowheeledrobotEnv(DirectRLEnv):
@@ -82,6 +86,15 @@ class TwowheeledrobotEnv(DirectRLEnv):
         # ---- Debug print throttle ---------------------------------------- #
         self._debug_print_interval: int = 50   # set to 0 to disable
         self._debug_step_count: int = 0
+
+        # ---- Real-time plotter ------------------------------------------- #
+        # Set enabled=True to open the live diagnostic window.
+        self._plotter = RealtimePlotter(
+            enabled=True,
+            window_sec=10.0,
+            dt=dt,
+            update_hz=5.0,
+        )
 
         # ---- Keyboard (WASD teleop) --------------------------------------- #
         self._input    = carb.input.acquire_input_interface()
@@ -141,6 +154,40 @@ class TwowheeledrobotEnv(DirectRLEnv):
         # - DDSM115_A_JFT.usd: approximation → boundingCylinder (smooth rolling, no tread bumping)
         # - All non-wheel bodies: collisionEnabled = False (removes hidden ground-drag friction)
 
+        # ---- Battery CoM offset --------------------------------------------- #
+        # The LiPo battery sits off the geometric centre of Platform_Group.
+        # Shift the body's centre of mass in the USD stage so inertia is correct.
+        # Values are set in sim_params.py (BATTERY_COM_OFFSET_X/Y).
+        if BATTERY_COM_OFFSET_X != 0.0 or BATTERY_COM_OFFSET_Y != 0.0:
+            try:
+                import omni.usd
+                from pxr import UsdPhysics, Gf
+
+                stage = omni.usd.get_context().get_stage()
+                # Platform_Group is the first body in env_0; adjust path if USD
+                # structure differs (check "All joints in USD" print at startup).
+                platform_path = (
+                    "/World/envs/env_0/Robot"
+                    "/SimplifiedBipedMainAssembly"
+                    "/SimplifiedBipedMainAssembly"
+                    "/Platform_Group"
+                )
+                prim = stage.GetPrimAtPath(platform_path)
+                if prim and prim.IsValid():
+                    if not prim.HasAPI(UsdPhysics.MassAPI):
+                        UsdPhysics.MassAPI.Apply(prim)
+                    mass_api = UsdPhysics.MassAPI(prim)
+                    mass_api.GetCenterOfMassAttr().Set(
+                        Gf.Vec3f(BATTERY_COM_OFFSET_X, BATTERY_COM_OFFSET_Y, 0.0)
+                    )
+                    print(f"[TwoWheeledRobot] Battery CoM offset applied: "
+                          f"x={BATTERY_COM_OFFSET_X:+.3f} m  y={BATTERY_COM_OFFSET_Y:+.3f} m")
+                else:
+                    print(f"[TwoWheeledRobot] WARNING: Platform_Group prim not found at "
+                          f"{platform_path!r} — CoM offset skipped.")
+            except Exception as e:
+                print(f"[TwoWheeledRobot] WARNING: CoM offset failed ({e}) — skipped.")
+
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
         light_cfg.func("/World/Light", light_cfg)
 
@@ -184,19 +231,24 @@ class TwowheeledrobotEnv(DirectRLEnv):
         omega_left  = wheel_vel[:, 0]   # Revolute_13
         omega_right = wheel_vel[:, 1]   # Revolute_6
 
-        torque_left, torque_right, cg_angles = self._controller.compute(
+        torque_left, torque_right, cg_pos, cg_vel, cg_ff = self._controller.compute(
             projected_gravity_b=proj_grav,
             ang_vel_b=ang_vel_b,
             omega_left=omega_left,
             omega_right=omega_right,
         )
 
-        # Wheel torques
+        self._plotter.push(self._controller.last)
+
+        # DDSM115 — current control → torque
         efforts = torch.stack([torque_left, torque_right], dim=1)
         self.robot.set_joint_effort_target(efforts, joint_ids=self._wheel_ids)
 
-        # CyberGear position targets — shape (N, 4) [fl, fr, bl, br]
-        self.robot.set_joint_position_target(cg_angles, joint_ids=self._cg_ids)
+        # CyberGear — full MIT control: position + velocity + feedforward torque
+        # τ_cg = cg_ff + kp*(cg_pos - θ) + kd*(cg_vel - ω)
+        self.robot.set_joint_position_target(cg_pos, joint_ids=self._cg_ids)
+        self.robot.set_joint_velocity_target(cg_vel, joint_ids=self._cg_ids)
+        self.robot.set_joint_effort_target   (cg_ff,  joint_ids=self._cg_ids)
 
         # ---- Throttled debug print --------------------------------------- #
         if self._debug_print_interval > 0:
@@ -232,8 +284,8 @@ class TwowheeledrobotEnv(DirectRLEnv):
                     f"body_x={body_x:+8.4f} m  body_y={body_y:+8.4f} m  body_z={body_z:+7.4f} m  "
                     f"mass={total_mass:.2f} kg  N≈{N_est:.1f} N  "
                     f"μN≈{N_est*0.25:.1f} N  "
-                    f"CG=[{float(cg_angles[0,0]):+.2f} {float(cg_angles[0,1]):+.2f} "
-                    f"{float(cg_angles[0,2]):+.2f} {float(cg_angles[0,3]):+.2f}] rad"
+                    f"CG=[{float(cg_pos[0,0]):+.2f} {float(cg_pos[0,1]):+.2f} "
+                    f"{float(cg_pos[0,2]):+.2f} {float(cg_pos[0,3]):+.2f}] rad"
                 )
 
     def _apply_action(self) -> None:

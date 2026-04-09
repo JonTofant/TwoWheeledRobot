@@ -39,8 +39,13 @@ CONTROL_DECIMATION:   int   = 4             # control sample time = 5ms × 4 = 2
 # =========================================================================== #
 #  Ground plane                                                                #
 # =========================================================================== #
-GROUND_STATIC_FRICTION:  float = 0.8   # rubber on hard floor — realistic range 0.7–0.9
-GROUND_DYNAMIC_FRICTION: float = 0.6   # slightly lower than static; no slip below ~0.65 Nm/wheel
+# Rubber tire on laminate flooring.  Measured ranges: μ_s ≈ 0.4–0.6,
+# μ_d ≈ 0.3–0.5.  Slip torque per wheel = μ_s × (m·g / 2) × r_wheel
+# ≈ 0.5 × (3.80 × 9.81 / 2) × 0.0505 ≈ 0.47 Nm.
+# PhysX enforces this automatically — no need to manually clamp torque
+# to the slip threshold; the joint effort limit handles motor saturation.
+GROUND_STATIC_FRICTION:  float = 0.5   # rubber on laminate
+GROUND_DYNAMIC_FRICTION: float = 0.4   # kinetic (post-slip)
 GROUND_RESTITUTION:      float = 0.0   # no bounce
 
 # =========================================================================== #
@@ -48,17 +53,40 @@ GROUND_RESTITUTION:      float = 0.0   # no bounce
 # =========================================================================== #
 
 # Extra mass added to every rigid body (kg).
-# 0.0  → perfect model.
-# 0.1  → each link is 100 g heavier (shifts CoM, stresses balance controller).
 ROBOT_MASS_OFFSET_KG: float = 0.0
 
-# Passive velocity damping applied to all links by PhysX.
-# Small values (< 0.05) are physically realistic for a rigid robot.
-LINEAR_DAMPING:  float = 0.0   # kg/s
-ANGULAR_DAMPING: float = 0.0   # kg·m²/s
+# Passive link-body velocity damping (air drag, structural flex).
+LINEAR_DAMPING:  float = 0.0
+ANGULAR_DAMPING: float = 0.0
+
+# =========================================================================== #
+#  Joint friction                                                              #
+# =========================================================================== #
+
+# DDSM115 wheel joints — internal motor friction (back-EMF + planetary gear).
+# Measured by spinning the real wheel with no current and fitting a linear
+# drag model.  0.05 Nm·s/rad gives ~0.5 Nm drag at 10 rad/s which is
+# consistent with the DDSM115 datasheet efficiency figures.
+WHEEL_INTERNAL_DAMPING: float = 0.05   # Nm·s/rad
+
+# Passive revolute joints (leg parallelogram bearings).
+# Rolling-element bearings have very low but non-zero viscous friction.
+# 0.005 Nm·s/rad corresponds to ~0.05 Nm at 10 rad/s — reasonable for
+# a small deep-groove ball bearing.
+BEARING_DAMPING: float = 0.005   # Nm·s/rad
+
+# =========================================================================== #
+#  Battery CoM offset                                                          #
+# =========================================================================== #
+# The LiPo battery sits slightly off the geometric centre of Platform_Group.
+# Applied to the Platform_Group USD prim after scene load (see env __init__).
+# Positive X = toward robot front, positive Y = toward robot left.
+# Set both to 0.0 to disable.
+BATTERY_COM_OFFSET_X: float =  0.02   # m  (2 cm forward — tune to real layout)
+BATTERY_COM_OFFSET_Y: float =  0.00   # m
 
 # =========================================================================== #
 #  Solver quality                                                              #
 # =========================================================================== #
-SOLVER_POSITION_ITERS: int = 8   # increase if joints vibrate or penetrate
-SOLVER_VELOCITY_ITERS: int = 4   # 1 under-resolves contact → artificial energy loss; 4 is minimum for accurate wheel-ground friction
+SOLVER_POSITION_ITERS: int = 8
+SOLVER_VELOCITY_ITERS: int = 4
