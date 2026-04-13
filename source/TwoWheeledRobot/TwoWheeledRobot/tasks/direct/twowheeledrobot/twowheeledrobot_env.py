@@ -231,11 +231,17 @@ class TwowheeledrobotEnv(DirectRLEnv):
         omega_left  = wheel_vel[:, 0]   # Revolute_13
         omega_right = wheel_vel[:, 1]   # Revolute_6
 
+        wheel_pos = self.robot.data.joint_pos[:, self._wheel_ids]  # (N, 2)
+        phi_left  = wheel_pos[:, 0]
+        phi_right = wheel_pos[:, 1]
+
         torque_left, torque_right, cg_pos, cg_vel, cg_ff = self._controller.compute(
             projected_gravity_b=proj_grav,
             ang_vel_b=ang_vel_b,
             omega_left=omega_left,
             omega_right=omega_right,
+            phi_left=phi_left,
+            phi_right=phi_right,
         )
 
         self._plotter.push(self._controller.last)
