@@ -164,6 +164,24 @@ class RobotController:
         self.vel_cmd:      float = 0.0   # m/s
         self.yaw_rate_cmd: float = 0.0   # rad/s
 
+        # Tunable gains — written by SMCTuner at runtime (default = module constants)
+        self.smc_alpha      = SMC_ALPHA
+        self.smc_beta       = SMC_BETA
+        self.smc_phi        = SMC_PHI
+        self.et_gamma       = ET_GAMMA
+        self.smc_yaw_lambda = SMC_YAW_LAMBDA
+        self.smc_yaw_phi    = SMC_YAW_PHI
+        self.et_k_max_bal   = ET_K_MAX_BAL
+        self.et_k_min_bal   = ET_K_MIN_BAL
+        self.et_k_sigma_bal = ET_K_SIGMA_BAL
+        self.et_k_max_yaw   = ET_K_MAX_YAW
+        self.et_k_min_yaw   = ET_K_MIN_YAW
+        self.et_k_sigma_yaw = ET_K_SIGMA_YAW
+        self.et_eta_bal     = ET_ETA_BAL
+        self.et_eps_bal     = ET_EPS_BAL
+        self.et_eta_yaw     = ET_ETA_YAW
+        self.et_eps_yaw     = ET_EPS_YAW
+
         # Read by the plotter each step
         self.last: dict = {}
 
@@ -259,31 +277,31 @@ class RobotController:
         # ── 4. Sliding surfaces ──────────────────────────────────────────────────
         # Balance surface — extended with position-hold term.
         s_bal = (theta
-                 + SMC_ALPHA * theta_dot
-                 + SMC_BETA  * (self.vel_cmd - v)
-                 + ET_GAMMA  * (self._x_cmd - x_odom))   # (N,) rad
+                 + self.smc_alpha * theta_dot
+                 + self.smc_beta  * (self.vel_cmd - v)
+                 + self.et_gamma  * (self._x_cmd - x_odom))   # (N,) rad
 
         # Heading surface (unchanged).
         e_heading = self._heading_cmd - self._heading
         e_heading = (e_heading + math.pi) % (2.0 * math.pi) - math.pi   # wrap ±π
-        s_yaw = e_heading + SMC_YAW_LAMBDA * (self.yaw_rate_cmd - psi_dot)  # (N,) rad
+        s_yaw = e_heading + self.smc_yaw_lambda * (self.yaw_rate_cmd - psi_dot)  # (N,) rad
 
         # ── 5. Event triggers (relative + absolute, Zeno-free) ───────────────────
-        trig_bal = (s_bal - self._s_bal_last).abs() > ET_ETA_BAL * self._s_bal_last.abs() + ET_EPS_BAL
-        trig_yaw = (s_yaw - self._s_yaw_last).abs() > ET_ETA_YAW * self._s_yaw_last.abs() + ET_EPS_YAW
+        trig_bal = (s_bal - self._s_bal_last).abs() > self.et_eta_bal * self._s_bal_last.abs() + self.et_eps_bal
+        trig_yaw = (s_yaw - self._s_yaw_last).abs() > self.et_eta_yaw * self._s_yaw_last.abs() + self.et_eps_yaw
 
         # ── 6. Adaptive gain — smooth rational schedule ──────────────────────────
         # K(|s|) = K_min + (K_max − K_min)·|s|/(|s| + σ)
         # Monotone, bounded, continuous — no switched-gain discontinuities.
         s_bal_mag = s_bal.abs()
-        k_bal = ET_K_MIN_BAL + (ET_K_MAX_BAL - ET_K_MIN_BAL) * s_bal_mag / (s_bal_mag + ET_K_SIGMA_BAL)
+        k_bal = self.et_k_min_bal + (self.et_k_max_bal - self.et_k_min_bal) * s_bal_mag / (s_bal_mag + self.et_k_sigma_bal)
 
         s_yaw_mag = s_yaw.abs()
-        k_yaw = ET_K_MIN_YAW + (ET_K_MAX_YAW - ET_K_MIN_YAW) * s_yaw_mag / (s_yaw_mag + ET_K_SIGMA_YAW)
+        k_yaw = self.et_k_min_yaw + (self.et_k_max_yaw - self.et_k_min_yaw) * s_yaw_mag / (s_yaw_mag + self.et_k_sigma_yaw)
 
         # ── 7. New control candidates (evaluated everywhere; applied only on trigger) ─
-        u_bal_new = k_bal * torch.tanh(s_bal / SMC_PHI)     # (N,) A
-        u_yaw_new = k_yaw * torch.tanh(s_yaw / SMC_YAW_PHI) # (N,) A
+        u_bal_new = k_bal * torch.tanh(s_bal / self.smc_phi)     # (N,) A
+        u_yaw_new = k_yaw * torch.tanh(s_yaw / self.smc_yaw_phi) # (N,) A
 
         # ── 8. ZOH update — apply new value only where triggered ────────────────
         self._u_bal_hold = torch.where(trig_bal, u_bal_new, self._u_bal_hold)

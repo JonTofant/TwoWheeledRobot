@@ -26,6 +26,7 @@ from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
 from .plotter import RealtimePlotter
+from .tuner import SMCTuner
 from .control import (
     RobotController,
     FWD_VEL_MAX, FWD_VEL_RAMP, FWD_VEL_DECAY, YAW_RATE_MAX,
@@ -72,6 +73,7 @@ class TwowheeledrobotEnv(DirectRLEnv):
 
         # ---- Control timestep -------------------------------------------- #
         dt = self.cfg.sim.dt * self.cfg.decimation
+        self._control_dt = dt   # stored for use in _get_dones
 
         # ---- Controller -------------------------------------------------- #
         self._controller = RobotController(
@@ -95,6 +97,13 @@ class TwowheeledrobotEnv(DirectRLEnv):
             dt=dt,
             update_hz=5.0,
         )
+
+        # ---- Real-time SMC parameter tuner ------------------------------- #
+        self._tuner = SMCTuner(controller=self._controller, enabled=True)
+
+        # ---- Fallen-state auto-reset timer ------------------------------- #
+        self._fallen_timer = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+        self._fallen_reset_delay: float = 0.5   # seconds before auto-reset
 
         # ---- Keyboard (WASD teleop) --------------------------------------- #
         self._input    = carb.input.acquire_input_interface()
@@ -127,8 +136,8 @@ class TwowheeledrobotEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self.robot
 
-        self.imu = Imu(self.cfg.imu)
-        self.scene.sensors["imu"] = self.imu
+        self.bno080 = Imu(self.cfg.bno080)
+        self.scene.sensors["bno080"] = self.bno080
 
         spawn_ground_plane(
             prim_path="/World/ground",
@@ -225,8 +234,8 @@ class TwowheeledrobotEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._read_keyboard()
 
-        proj_grav = self.imu.data.projected_gravity_b    # (N, 3)
-        ang_vel_b = self.imu.data.ang_vel_b              # (N, 3)
+        proj_grav = self.bno080.data.projected_gravity_b    # (N, 3)
+        ang_vel_b = self.bno080.data.ang_vel_b              # (N, 3)
         wheel_vel = self.robot.data.joint_vel[:, self._wheel_ids]  # (N, 2)
         omega_left  = wheel_vel[:, 0]   # Revolute_13
         omega_right = wheel_vel[:, 1]   # Revolute_6
@@ -301,8 +310,8 @@ class TwowheeledrobotEnv(DirectRLEnv):
     # Observations                                                            #
     # ---------------------------------------------------------------------- #
     def _get_observations(self) -> dict:
-        proj_grav = self.imu.data.projected_gravity_b
-        ang_vel_b = self.imu.data.ang_vel_b
+        proj_grav = self.bno080.data.projected_gravity_b
+        ang_vel_b = self.bno080.data.ang_vel_b
         wheel_vel = self.robot.data.joint_vel[:, self._wheel_ids]
 
         tilt        = proj_grav[:, IMU_TILT_GRAVITY_AXIS].unsqueeze(1)
@@ -318,14 +327,21 @@ class TwowheeledrobotEnv(DirectRLEnv):
     # Rewards / termination                                                   #
     # ---------------------------------------------------------------------- #
     def _get_rewards(self) -> torch.Tensor:
-        return -self.imu.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS].abs()
+        return -self.bno080.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS].abs()
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Tilt-based termination disabled for floor-friction diagnostic.
-        # Re-enable by un-commenting the lines below.
-        # tilt    = self.imu.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS]
-        # fallen  = tilt.abs() > math.sin(self._max_pitch)
-        fallen  = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        tilt = self.bno080.data.projected_gravity_b[:, IMU_TILT_GRAVITY_AXIS]
+        currently_fallen = tilt.abs() > math.sin(self._max_pitch)
+
+        # Accumulate time spent fallen; reset timer whenever robot is upright.
+        self._fallen_timer = torch.where(
+            currently_fallen,
+            self._fallen_timer + self._control_dt,
+            torch.zeros_like(self._fallen_timer),
+        )
+
+        # Trigger reset only after the robot has been fallen for 2 seconds.
+        fallen  = self._fallen_timer >= self._fallen_reset_delay
         timeout = self.episode_length_buf >= self.max_episode_length - 1
         return fallen, timeout
 
@@ -337,6 +353,7 @@ class TwowheeledrobotEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
+        self._fallen_timer[env_ids] = 0.0
         self._controller.reset()
 
         root_state = self.robot.data.default_root_state[env_ids].clone()

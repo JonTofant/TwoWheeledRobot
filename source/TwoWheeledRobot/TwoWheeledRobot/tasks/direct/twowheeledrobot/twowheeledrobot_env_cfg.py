@@ -55,12 +55,13 @@ class TwowheeledrobotEnvCfg(DirectRLEnvCfg):
     # ------------------------------------------------------------------ #
     # IMU sensor                                                          #
     #                                                                     #
-    # prim_path must match the Imu_Sensor xform inside World0.usd.       #
+    # prim_path must match the BNO080 xform/sensor prim inside           #
+    # World0.usd (visible in Isaac Sim under Platform_Group/BNO080).     #
     # Run once and print the prim tree if the path needs adjusting:      #
     #   stage = omni.usd.get_context().get_stage()                       #
     #   for p in stage.Traverse(): print(p.GetPath())                    #
     # ------------------------------------------------------------------ #
-    imu: ImuCfg = ImuCfg(
+    bno080: ImuCfg = ImuCfg(
         prim_path=(
             "/World/envs/env_.*/Robot"
             "/SimplifiedBipedMainAssembly"
@@ -73,4 +74,4 @@ class TwowheeledrobotEnvCfg(DirectRLEnvCfg):
     # ------------------------------------------------------------------ #
     # Termination                                                         #
     # ------------------------------------------------------------------ #
-    max_pitch_deg: float = 45.0   # episode ends if robot tilts beyond this
+    max_pitch_deg: float = 44.0   # episode ends if robot tilts beyond this
