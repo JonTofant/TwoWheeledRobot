@@ -13,6 +13,16 @@ from . import agents
 
 
 gym.register(
+    id="Template-Twowheeledrobot-Petasmc-v0",
+    entry_point=f"{__name__}.petasmc_rl_env:PetasmcRlEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.petasmc_rl_env_cfg:PetasmcRlEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_petasmc_cfg:PetasmcPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Template-Twowheeledrobot-Direct-v0",
     entry_point=f"{__name__}.twowheeledrobot_env:TwowheeledrobotEnv",
     disable_env_checker=True,

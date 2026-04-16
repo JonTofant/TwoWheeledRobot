@@ -11,14 +11,23 @@ CyberGear leg motors (MIT mode)
     Set desired_velocity in rad/s and ff_torque in Nm (leave at 0 for now).
     kp / kd are the same numbers as in cybergear.c (hardware range 0–500 / 0–5).
 
-Control algorithm: Event-Triggered Adaptive Sliding Mode Control (ETASMC)
+Control algorithm: Periodic Event-Triggered Adaptive Sliding Mode Control (PETASMC)
 ------------------------------------------------------------
-Two coupled SMC surfaces with event-triggered zero-order hold (ZOH) and
-adaptive gain scheduling.  The ZOH holds the last computed control output
-between events; a new output is computed only when a surface-based event
-fires.  Near equilibrium events space out naturally (self-quiescence) and
-the gain scales down, eliminating chattering without sacrificing recovery
-authority during large disturbances.
+Two coupled SMC surfaces with periodic event-triggered zero-order hold (ZOH)
+and adaptive gain scheduling.  A minimum inter-event time (periodic floor)
+bounds the worst-case update rate; the event condition allows early firing
+within that window when a disturbance is detected.  Near equilibrium the
+controller self-quiesces toward the floor rate; during large disturbances it
+fires as fast as the sensor period allows.  The adaptive gain scales with
+surface magnitude, eliminating chattering without sacrificing recovery
+authority.
+
+  Periodic floor (minimum inter-event time):
+    Trigger is only eligible after et_min_iet seconds have elapsed since the
+    last trigger.  Bounds worst-case update rate to 1/et_min_iet Hz during
+    quiet operation; event condition allows early firing for impulse forces
+    that occur within the window.
+    Default: 20 ms → 50 Hz floor (matches prior fixed-rate tuning baseline).
 
   Balance + velocity + position surface (common mode — equal current both wheels):
     x_odom  = 0.5·R·(−φ_L + φ_R)           (wheel odometry, direct encoder read)
@@ -109,7 +118,7 @@ SMC_YAW_LAMBDA: float = 0.15   # s    — yaw-rate weight (halved from 0.30)
 SMC_YAW_PHI:   float = 0.20   # rad  — boundary-layer width (widened back to 0.20 for smoother yaw)
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Event-Triggered Adaptive SMC (ETASMC) parameters
+#  Periodic Event-Triggered Adaptive SMC (PETASMC) parameters
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Position hold — weight of odometry error term in balance surface.
@@ -148,6 +157,13 @@ ET_EPS_BAL: float = 0.008   # rad — absolute floor
 ET_ETA_YAW: float = 0.05    # near-continuous: fires whenever s_yaw changes > 5 %
 ET_EPS_YAW: float = 0.003   # rad — absolute floor
 
+# Minimum inter-event time — periodic floor (PETASMC).
+# Trigger is blocked until this much time has elapsed since the last update.
+# Default 20 ms → worst-case 50 Hz, matching prior fixed-rate tuning baseline.
+# Early firing is still allowed within the window when the event condition fires.
+ET_MIN_IET_BAL: float = 0.020   # s
+ET_MIN_IET_YAW: float = 0.020   # s
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Controller
@@ -181,6 +197,8 @@ class RobotController:
         self.et_eps_bal     = ET_EPS_BAL
         self.et_eta_yaw     = ET_ETA_YAW
         self.et_eps_yaw     = ET_EPS_YAW
+        self.et_min_iet_bal = ET_MIN_IET_BAL
+        self.et_min_iet_yaw = ET_MIN_IET_YAW
 
         # Read by the plotter each step
         self.last: dict = {}
@@ -214,6 +232,12 @@ class RobotController:
         self._t_since_bal = torch.zeros(num_envs, device=device, dtype=torch.float32)
         self._t_since_yaw = torch.zeros(num_envs, device=device, dtype=torch.float32)
 
+        # ── Current-step cache (read by RL env each step) ────────────────────
+        self._s_bal_cur    = torch.zeros(num_envs, device=device, dtype=torch.float32)
+        self._s_yaw_cur    = torch.zeros(num_envs, device=device, dtype=torch.float32)
+        self._trig_bal_cur = torch.zeros(num_envs, device=device, dtype=torch.bool)
+        self._trig_yaw_cur = torch.zeros(num_envs, device=device, dtype=torch.bool)
+
     def reset(self, env_ids=None) -> None:
         if env_ids is None:
             self._heading.zero_()
@@ -227,6 +251,10 @@ class RobotController:
             self._iet_yaw.zero_()
             self._t_since_bal.zero_()
             self._t_since_yaw.zero_()
+            self._s_bal_cur.zero_()
+            self._s_yaw_cur.zero_()
+            self._trig_bal_cur.zero_()
+            self._trig_yaw_cur.zero_()
         else:
             self._heading[env_ids]     = 0.0
             self._heading_cmd[env_ids] = 0.0
@@ -239,6 +267,10 @@ class RobotController:
             self._iet_yaw[env_ids]     = 0.0
             self._t_since_bal[env_ids] = 0.0
             self._t_since_yaw[env_ids] = 0.0
+            self._s_bal_cur[env_ids]   = 0.0
+            self._s_yaw_cur[env_ids]   = 0.0
+            self._trig_bal_cur[env_ids] = False
+            self._trig_yaw_cur[env_ids] = False
 
     def compute(
         self,
@@ -286,9 +318,21 @@ class RobotController:
         e_heading = (e_heading + math.pi) % (2.0 * math.pi) - math.pi   # wrap ±π
         s_yaw = e_heading + self.smc_yaw_lambda * (self.yaw_rate_cmd - psi_dot)  # (N,) rad
 
-        # ── 5. Event triggers (relative + absolute, Zeno-free) ───────────────────
-        trig_bal = (s_bal - self._s_bal_last).abs() > self.et_eta_bal * self._s_bal_last.abs() + self.et_eps_bal
-        trig_yaw = (s_yaw - self._s_yaw_last).abs() > self.et_eta_yaw * self._s_yaw_last.abs() + self.et_eps_yaw
+        # ── 5. Event triggers — periodic floor + surface threshold (PETASMC) ────
+        # Trigger is gated by the minimum IET: no update until et_min_iet has
+        # elapsed.  Within the window the surface condition allows early firing
+        # for impulse disturbances.  Worst-case rate = 1/et_min_iet Hz.
+        can_trigger_bal = self._t_since_bal >= self.et_min_iet_bal
+        can_trigger_yaw = self._t_since_yaw >= self.et_min_iet_yaw
+
+        trig_bal = can_trigger_bal & (
+            (s_bal - self._s_bal_last).abs() >
+            self.et_eta_bal * self._s_bal_last.abs() + self.et_eps_bal
+        )
+        trig_yaw = can_trigger_yaw & (
+            (s_yaw - self._s_yaw_last).abs() >
+            self.et_eta_yaw * self._s_yaw_last.abs() + self.et_eps_yaw
+        )
 
         # ── 6. Adaptive gain — smooth rational schedule ──────────────────────────
         # K(|s|) = K_min + (K_max − K_min)·|s|/(|s| + σ)
@@ -341,6 +385,12 @@ class RobotController:
         cg_vel = _z4 + desired_velocity
         cg_ff  = _z4 + ff_torque
 
+        # Cache current-step values for RL env access
+        self._s_bal_cur    = s_bal
+        self._s_yaw_cur    = s_yaw
+        self._trig_bal_cur = trig_bal
+        self._trig_yaw_cur = trig_yaw
+
         self.last = {
             "tilt":        math.degrees(float(theta[0])),
             "tilt_rate":   float(theta_dot[0]),
@@ -350,7 +400,7 @@ class RobotController:
             "torque_R":    float(tr[0]),
             "vel_cmd":     self.vel_cmd,
             "vel_fwd":     float(v[0]),
-            # ETASMC diagnostics
+            # PETASMC diagnostics
             "s_bal":       float(s_bal[0]),
             "s_yaw":       float(s_yaw[0]),
             "trig_bal":    float(trig_bal[0]),

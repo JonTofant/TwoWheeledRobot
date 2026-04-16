@@ -43,6 +43,8 @@ _TRIGGER_PARAMS = [
     ("et_eps_bal",     "ε_bal  [rad]",      0.000, 0.100, 0.001, "{:.4f}"),
     ("et_eta_yaw",     "η_yaw  (relative)", 0.000, 1.000, 0.010, "{:.3f}"),
     ("et_eps_yaw",     "ε_yaw  [rad]",      0.000, 0.100, 0.001, "{:.4f}"),
+    ("et_min_iet_bal", "T_min_bal  [s]",    0.005, 0.100, 0.001, "{:.3f}"),
+    ("et_min_iet_yaw", "T_min_yaw  [s]",    0.005, 0.100, 0.001, "{:.3f}"),
 ]
 
 _ALL_SECTIONS = [
@@ -149,6 +151,7 @@ class SMCTuner:
             ET_K_MAX_BAL, ET_K_MIN_BAL, ET_K_SIGMA_BAL,
             ET_K_MAX_YAW, ET_K_MIN_YAW, ET_K_SIGMA_YAW,
             ET_ETA_BAL, ET_EPS_BAL, ET_ETA_YAW, ET_EPS_YAW,
+            ET_MIN_IET_BAL, ET_MIN_IET_YAW,
         )
         defaults = {
             "smc_alpha":      SMC_ALPHA,
@@ -167,6 +170,8 @@ class SMCTuner:
             "et_eps_bal":     ET_EPS_BAL,
             "et_eta_yaw":     ET_ETA_YAW,
             "et_eps_yaw":     ET_EPS_YAW,
+            "et_min_iet_bal": ET_MIN_IET_BAL,
+            "et_min_iet_yaw": ET_MIN_IET_YAW,
         }
         for attr, val in defaults.items():
             setattr(self._controller, attr, val)

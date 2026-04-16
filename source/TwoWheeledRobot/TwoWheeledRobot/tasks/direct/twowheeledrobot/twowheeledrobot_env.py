@@ -26,6 +26,7 @@ from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
 from .plotter import RealtimePlotter
+from .tb_logger import TBLogger
 from .tuner import SMCTuner
 from .control import (
     RobotController,
@@ -97,6 +98,11 @@ class TwowheeledrobotEnv(DirectRLEnv):
             dt=dt,
             update_hz=5.0,
         )
+
+        # ---- TensorBoard logger ------------------------------------------ #
+        # Logs all controller diagnostics to logs/tensorboard/<timestamp>/.
+        # Start the viewer with: tensorboard --logdir logs/tensorboard
+        self._tb = TBLogger(enabled=True, log_every_n=10)
 
         # ---- Real-time SMC parameter tuner ------------------------------- #
         self._tuner = SMCTuner(controller=self._controller, enabled=True)
@@ -254,6 +260,7 @@ class TwowheeledrobotEnv(DirectRLEnv):
         )
 
         self._plotter.push(self._controller.last)
+        self._tb.push(self._controller.last)
 
         # DDSM115 — current control → torque
         efforts = torch.stack([torque_left, torque_right], dim=1)

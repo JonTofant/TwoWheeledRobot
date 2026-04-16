@@ -1,0 +1,828 @@
+--- git status ---
+On branch feature/petasmc
+Your branch is up to date with 'origin/feature/petasmc'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   README.md
+	modified:   scripts/rsl_rl/__pycache__/cli_args.cpython-311.pyc
+	modified:   scripts/rsl_rl/play.py
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__init__.py
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/__init__.cpython-311.pyc
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/control.cpython-311.pyc
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/tuner.cpython-311.pyc
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/control.py
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tuner.py
+	modified:   source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/twowheeledrobot_env.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	logs/
+	outputs/
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/petasmc_rl_env.cpython-311.pyc
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/petasmc_rl_env_cfg.cpython-311.pyc
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/agents/__pycache__/rsl_rl_petasmc_cfg.cpython-311.pyc
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/agents/rsl_rl_petasmc_cfg.py
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/petasmc_rl_env.py
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/petasmc_rl_env_cfg.py
+	source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tb_logger.py
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/README.md b/README.md
+index 9b71e35..6c3e1b6 100644
+--- a/README.md
++++ b/README.md
+@@ -1,205 +1,301 @@
+-# Two-Wheeled Robot — Isaac Lab Control Research
++# Two-Wheeled Robot — Control Research Platform
+ 
+-A research platform for developing and validating control algorithms for a custom two-wheeled inverted-pendulum robot. Simulation runs in NVIDIA Isaac Lab (GPU-accelerated PhysX). Target: deploy validated controllers to the physical robot.
++A research platform for developing and validating control algorithms on a custom **two-wheeled inverted pendulum robot**. The simulation runs in NVIDIA Isaac Lab (GPU-accelerated PhysX). Validated controllers deploy directly to the physical robot via C firmware that mirrors the Python control code exactly.
++
++---
++
++## What This Project Does
++
++The robot is inherently unstable — like a pencil balanced on its tip. To stay upright it must continuously lean into its direction of motion, using wheel torque to counteract falling.
++
++Three control layers stack on top of each other:
++
++```
++┌─────────────────────────────────────────────────────────────┐
++│                3. RL Gain Scheduler  (optional)              │
++│   Watches robot state + trigger diagnostics, adjusts the     │
++│   four most impactful gains in real-time via a trained       │
++│   neural network  [32 → 32 → 4 outputs]                     │
++│   Goal: maximise inter-event time while maintaining balance  │
++└────────────────────────┬────────────────────────────────────┘
++                         │ T_min_bal, T_min_yaw, K_max_bal, K_max_yaw
++┌────────────────────────▼────────────────────────────────────┐
++│         2. PETASMC Controller  (core balance law)            │
++│                                                              │
++│   Sensors ──► Sliding surfaces  s_bal, s_yaw                │
++│                      │                                       │
++│           ┌──────────▼──────────┐                           │
++│           │  Periodic trigger?  │                           │
++│           │  t_since ≥ T_min    │  ← floor rate (default   │
++│           │  AND |Δs| > η|s̃|+ε │    20 ms = 50 Hz)        │
++│           └──────┬──────┬───────┘                           │
++│             YES  │      │  NO                               │
++│          compute │      │ hold last output (ZOH)            │
++│          new u   │      │                                    │
++│           └──────▼──────┘                                    │
++│           current_L = u_bal − u_yaw                         │
++│           current_R = u_bal + u_yaw                         │
++└────────────────────────┬────────────────────────────────────┘
++                         │ wheel torque = current × Kt
++┌────────────────────────▼────────────────────────────────────┐
++│                1. Physical Robot                             │
++│   2× DDSM115 wheel motors   4× CyberGear leg motors         │
++│   IMU (tilt + yaw rate)      Wheel encoders (speed + angle) │
++└─────────────────────────────────────────────────────────────┘
++```
+ 
+ ---
+ 
+ ## Hardware
+ 
++```
++           ┌──────────────────┐
++           │  Platform + IMU  │
++      ┌────┤  Battery + MCU   ├────┐
++      │ CG │                  │ CG │  ← 4× CyberGear legs (MIT mode)
++      └────┤                  ├────┘     hold upright stance
++           └────────┬─────────┘
++      ○─────────────┴─────────────○
++    Left                         Right
++   DDSM115                     DDSM115
++  (current)                   (current)
++```
++
+ | Component | Details |
+ |-----------|---------|
+-| Wheels | 2× DDSM115 current-controlled motors, ±8 A, Kt = 0.75 Nm/A |
+-| Legs | 4× Xiaomi CyberGear in MIT mode (kp/kd + torque feedforward) |
+-| IMU | Gravity projection + 3-axis angular velocity in body frame |
++| Wheels | 2× DDSM115, current-controlled, ±8 A, Kt = 0.75 Nm/A |
++| Legs | 4× Xiaomi CyberGear in MIT mode (kp + kd + torque FF) |
++| IMU | BNO080 — gravity projection + 3-axis angular velocity |
+ | Wheel radius | 0.0505 m (calibrated) |
+ 
+-**Left wheel USD mesh is mirrored** — the translation layer in `control.py` negates the left current to get forward = positive convention. Do not change that negation.
++> **Left wheel note:** The USD mesh is mirrored. The translation layer in `control.py` negates the left wheel current so forward = positive on both sides. Do not change this.
+ 
+ ---
+ 
+-## Running the Simulation
++## Control Algorithm: PETASMC
+ 
+-```bash
+-# From the TwoWheeledRobot/ directory:
+-python scripts/zero_agent.py --task Template-Twowheeledrobot-Direct-v0
+-
+-# If no GUI appears (Docker):
+-xhost +local:docker   # run on the host first
+-```
+-
+-Keyboard teleop: **W/S** = forward/back, **A/D** = turn left/right.
++**Periodic Event-Triggered Adaptive Sliding Mode Control**
+ 
+----
++The algorithm answers a key hardware question: *how often does the microcontroller actually need to write a new current command to the motors?* Fixed-rate control wastes CAN bus bandwidth at equilibrium. Pure event-triggered control can burst to maximum rate during a disturbance. PETASMC combines both:
+ 
+-## Control Algorithm: Event-Triggered Adaptive SMC (ETASMC)
++- **Periodic floor** — never updates faster than `T_min` (default 20 ms = 50 Hz). This matches the prior fixed-rate tuning and bounds worst-case CAN traffic.
++- **Event trigger** — can update early (within the window) if the surface changes enough. An impulse at t = 7 ms fires at t = 7 ms, not t = 20 ms.
++- **Adaptive gain** — scales current with how far the robot is from equilibrium. Gentle near upright, strong during recovery.
+ 
+-All control logic lives in `control.py`. The algorithm has three coupled layers:
++### Sliding Surfaces
+ 
+-### 1. Sliding Surfaces
++The controller watches two error surfaces. When a surface grows, the robot is moving away from the desired state.
+ 
+-**Balance + velocity + position (common mode — equal current to both wheels):**
++**Balance surface** — drives tilt, velocity, and position to zero:
+ ```
+-x_odom  = 0.5 · R · (−φ_L + φ_R)          wheel odometry, direct encoder read
+-x_cmd   advances at vel_cmd · dt            freezes when vel_cmd = 0 → position-hold
+-s_bal = θ + α·θ̇ + β·(v_cmd − v) + γ·(x_cmd − x_odom)
++s_bal = θ  +  α·θ̇  +  β·(v_cmd − v)  +  γ·(x_cmd − x_odom)
++         ↑      ↑              ↑                   ↑
++       tilt  tilt rate    velocity error      position error
+ ```
+ 
+-**Heading (differential mode — yaw torque via wheel current difference):**
++**Heading surface** — drives yaw to the commanded angle:
+ ```
+-ψ̂  = ∫ ψ̇ dt       simulated compass from IMU yaw rate
+-s_yaw = e_heading + λ·(ψ̇_cmd − ψ̇)
++s_yaw = (ψ_cmd − ψ)  +  λ·(ψ̇_cmd − ψ̇)
++              ↑                  ↑
++         heading error      yaw rate error
+ ```
+ 
+-Both set-points use implicit hold logic: while commanding motion the set-point advances (error ≈ 0); releasing the command freezes it and hold engages automatically.
++Both set-points use **implicit hold**: while a key is held the set-point advances (error ≈ 0, rate-following mode). Releasing the key freezes the set-point and hold engages automatically — no mode switch needed.
+ 
+-### 2. Adaptive Gain
++### Adaptive Gain
+ 
+ ```
+ K(|s|) = K_min + (K_max − K_min) · |s| / (|s| + σ)
+ ```
+-- Near equilibrium (|s| → 0): gain → K_min (gentle, no chattering)
+-- Large disturbance (|s| → ∞): gain → K_max (fast recovery)
+-- Continuous and monotone — no switched-gain discontinuities
+ 
+-### 3. Event Trigger (zero-order hold)
++| Situation | |s| | Gain |
++|-----------|-----|------|
++| Near upright | ≈ 0 | → K_min (gentle, no chattering) |
++| Moderate lean | ~ σ | midpoint |
++| Falling | → ∞ | → K_max (maximum recovery) |
++
++### Periodic Event Trigger
+ 
+ ```
+-trigger = |s(t) − s̃| > η · |s̃| + ε
++can_trigger  = time_since_last ≥ T_min          ← periodic floor
++event_fires  = |s(t) − s̃| > η·|s̃| + ε        ← surface threshold
++trigger      = can_trigger  AND  event_fires
+ ```
+-Where `s̃` is the surface value at the last trigger. Between triggers the last computed output is held (ZOH). Near equilibrium, |s| changes slowly → fewer triggers (**self-quiescence**). The `ε > 0` term guarantees a positive minimum inter-event time (**Zeno-free**: T_min ≥ ε / max|ṡ|).
++
++`s̃` is the surface value captured at the last trigger. `ε > 0` guarantees a minimum inter-event time (Zeno-free: `T_min ≥ ε / max|ṡ|`).
++
++| Condition | Trigger rate | Meaning |
++|-----------|-------------|---------|
++| Quiet, balanced | 1 / T_min = 50 Hz max | CAN traffic bounded |
++| Active disturbance | up to 200 Hz (sensor rate) | Fast reaction within window |
+ 
+ ### Wheel Currents
+ 
+ ```
+-u_bal = K_bal(|s_bal|) · tanh(s_bal / SMC_PHI)       [A]  — updated on trigger
+-u_yaw = K_yaw(|s_yaw|) · tanh(s_yaw / SMC_YAW_PHI)  [A]  — updated on trigger
++u_bal = K_bal(|s_bal|) · tanh(s_bal / φ)      [A]
++u_yaw = K_yaw(|s_yaw|) · tanh(s_yaw / φ_yaw)  [A]
+ 
+-current_left  = u_bal − u_yaw
+-current_right = u_bal + u_yaw
+-torque = current × Kt = current × 0.75 Nm/A
++current_left  = u_bal − u_yaw     →  torque_left  = current × Kt
++current_right = u_bal + u_yaw     →  torque_right = current × Kt
+ ```
+ 
+ ---
+ 
+-## Tuning Reference
++## RL Gain Scheduler
+ 
+-All tuneable parameters are constants at the top of `control.py`. The table below describes which state each parameter primarily affects and what changing it does.
++Training a PPO policy to schedule the four most impactful PETASMC gains in real-time. The PETASMC structure is preserved — the RL policy only adjusts parameters, it does not replace the control law.
+ 
+-### Balance Surface Shape
++**Why this is interesting academically:**
++- The SMC surfaces provide Lyapunov stability guarantees regardless of gain values
++- The RL provides *optimal* gain scheduling that a human cannot tune manually
++- The result runs at 50 Hz on an STM32F446RE (network: ~1 540 float32 weights ≈ 6 KB)
+ 
+-| Parameter | Current value | Effect |
+-|-----------|--------------|--------|
+-| `SMC_ALPHA` | 0.08 s | Weight of **tilt rate** θ̇ in s_bal. Increase → more damping on tilt oscillations. Too high → sluggish, can cause hunting. |
+-| `SMC_BETA` | 0.60 s/m | Weight of **velocity error** in s_bal. Increase → tighter velocity tracking, steeper required lean angle. Too high → robot runs to chase velocity set-point. |
+-| `SMC_PHI` | 0.20 rad | **Boundary-layer width** for balance tanh. Increase → smoother control near equilibrium (less chattering) but slower response. Decrease → snappier but more chattering. |
+-| `ET_GAMMA` | 0.00 m⁻¹ | Weight of **position error** (wheel odometry) in s_bal. Currently disabled. Enable (try 0.05) only after balance + yaw are stable; spinning corrupts x_odom. |
++**Observation (10 dims):**
+ 
+-### Balance Adaptive Gain
++| # | Signal | Description |
++|---|--------|-------------|
++| 0 | θ | Tilt angle (rad) |
++| 1 | θ̇ | Tilt rate (rad/s) |
++| 2 | ψ̇ | Yaw rate (rad/s) |
++| 3 | v | Forward wheel velocity (m/s) |
++| 4 | v_cmd | Commanded velocity (m/s) |
++| 5 | s_bal | Balance surface value |
++| 6 | s_yaw | Heading surface value |
++| 7 | IET_bal / T_min_bal | How sparse the balance trigger is (1 = at floor) |
++| 8 | IET_yaw / T_min_yaw | Same for heading |
++| 9 | T_min_bal (normalised) | Current balance floor setting |
+ 
+-| Parameter | Current value | Effect |
+-|-----------|--------------|--------|
+-| `ET_K_MAX_BAL` | 1.6 A | **Maximum** wheel current for balance. Upper bound on recovery authority. Increase if robot cannot recover from large tilts. Hardware limit: 8 A. |
+-| `ET_K_MIN_BAL` | 0.70 A | **Minimum** wheel current near equilibrium. Must be large enough to hold upright against gravity + CoM offset. Increase if robot drifts without converging. |
+-| `ET_K_SIGMA_BAL` | 0.15 rad | Surface magnitude at which gain is halfway between K_min and K_max. Decrease → gain rises faster from K_min; increase → wider gentle region. |
++**Action (4 dims, mapped from [-1, 1]):**
+ 
+-### Heading Surface Shape
++| # | Gain | Range |
++|---|------|-------|
++| 0 | T_min_bal | 5 – 40 ms |
++| 1 | T_min_yaw | 5 – 40 ms |
++| 2 | K_max_bal | 0.8 – 2.5 A |
++| 3 | K_max_yaw | 0.05 – 0.30 A |
+ 
+-| Parameter | Current value | Effect |
+-|-----------|--------------|--------|
+-| `SMC_YAW_LAMBDA` | 0.15 s | Weight of **yaw rate error** ψ̇ in s_yaw. Increase → more damping on yaw oscillations. Was 0.30 — caused yaw torque to dominate balance at moderate spin rates. |
+-| `SMC_YAW_PHI` | 0.20 rad | **Boundary-layer width** for heading tanh. Same trade-off as SMC_PHI but for yaw. |
++**Reward:**
++```
++r = 2.0 · exp(−θ²/0.01)          balance quality
++  + 1.0 · exp(−(v−v_cmd)²/0.25)  velocity tracking
++  + 0.1 · (1 − trig_bal)         sparsity bonus per held step
++  + 0.5                           alive bonus
++  − 200   (once, at fall)         termination penalty
++```
+ 
+-### Heading Adaptive Gain
++**Domain randomisation per episode:** ±15% mass, random initial tilt ±2.3°, random velocity command ±0.3 m/s, random push impulses every ~4 s, IMU noise on all observations.
+ 
+-| Parameter | Current value | Effect |
+-|-----------|--------------|--------|
+-| `ET_K_MAX_YAW` | 0.15 A | **Maximum differential current** for heading correction. Critical: keep well below ET_K_MIN_BAL so balance always dominates the torque budget. Was 0.50 A — starved balance. |
+-| `ET_K_MIN_YAW` | 0.02 A | Minimum heading correction near equilibrium. |
+-| `ET_K_SIGMA_YAW` | 0.10 rad | Half-saturation point for yaw gain schedule. |
++---
+ 
+-### Event Trigger Thresholds
++## Running
+ 
+-| Parameter | Current value | Effect |
+-|-----------|--------------|--------|
+-| `ET_ETA_BAL` | 0.20 | **Relative** balance trigger threshold. Decrease → more frequent balance events (approaches fixed-rate at 0). Increase → sparser updates, more ZOH hold time. |
+-| `ET_EPS_BAL` | 0.008 rad | **Absolute** floor for balance trigger. Must be above IMU noise (~0.003 rad). Governs minimum inter-event time (Zeno guarantee). |
+-| `ET_ETA_YAW` | 0.05 | Relative heading trigger threshold. Set low (near-continuous) to prevent ZOH overshoot oscillation in the fast yaw channel. |
+-| `ET_EPS_YAW` | 0.003 rad | Absolute floor for heading trigger. |
++### Manual control (keyboard teleop)
++```bash
++# From TwoWheeledRobot/
++python scripts/zero_agent.py --task Template-Twowheeledrobot-Direct-v0
+ 
+----
++# If no GUI (Docker): run this on the host first
++xhost +local:docker
++```
++**W/S** = forward / back · **A/D** = turn left / right
+ 
+-## Tuning Procedure
++The live plotter and SMC tuner open automatically.
+ 
+-Work through these stages in order. Do not move to the next stage until the current one is stable.
++### Train the RL gain scheduler
++```bash
++python scripts/rsl_rl/train.py \
++    --task Template-Twowheeledrobot-Petasmc-v0 \
++    --headless --num_envs 2048
++```
++Logs saved to `logs/rsl_rl/petasmc_gain_scheduler/`.
+ 
+-### Stage 1 — Balance only (ET_GAMMA = 0, ignore yaw drift)
++### Play back a trained policy
++```bash
++python scripts/rsl_rl/play.py \
++    --task Template-Twowheeledrobot-Petasmc-v0 \
++    --num_envs 1
++```
+ 
+-Goal: robot stands upright, tilt ≈ 0°, zero forward drift.
++---
++
++## Tuning Reference
+ 
+-Watch in plotter: **tilt (deg)** and **torque L/R**.
++All tuneable parameters are constants at the top of `control.py` and can also be adjusted live via the SMC Tuner panel.
+ 
+-1. If robot falls forward/backward within 2 s: increase `ET_K_MIN_BAL` (0.70 → 0.90 A).
+-2. If torques chatter at high frequency near equilibrium: increase `SMC_PHI` (0.20 → 0.30 rad) or decrease `ET_K_MIN_BAL`.
+-3. If robot oscillates (tilt swings ±5° repeatedly): decrease `SMC_ALPHA` (0.08 → 0.05 s) or decrease `ET_K_MAX_BAL`.
+-4. If robot drifts forward/back with no oscillation: this is a CoM offset. Acceptable at this stage.
+-5. Verify `tau_L ≈ tau_R` (symmetric torques). Large asymmetry means yaw dominates — reduce `ET_K_MAX_YAW` further.
++### Balance Surface
+ 
+-### Stage 2 — Heading stability
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `SMC_ALPHA` | 0.08 s | Tilt-rate weight. Increase → more damping. Too high → sluggish / hunting. |
++| `SMC_BETA` | 0.60 s/m | Velocity-error weight. Increase → tighter speed tracking, steeper lean. |
++| `SMC_PHI` | 0.20 rad | tanh boundary-layer width. Increase → smoother but slower near equilibrium. |
++| `ET_GAMMA` | 0.00 m⁻¹ | Position-hold weight (odometry). **Disabled** — enable only after balance + yaw are stable. |
+ 
+-Goal: robot stands upright AND does not spin.
++### Balance Adaptive Gain
+ 
+-Watch in plotter: **yaw_rate**, **tau_L vs tau_R**, **s_yaw**.
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `ET_K_MAX_BAL` | 1.6 A | Maximum recovery current. Increase if robot cannot recover from large tilts. |
++| `ET_K_MIN_BAL` | 0.70 A | Minimum holding current. Increase if robot drifts without converging. |
++| `ET_K_SIGMA_BAL` | 0.15 rad | Half-saturation point. Decrease → gain rises faster from K_min. |
+ 
+-1. If robot spins slowly and never corrects: check sign of yaw correction (see firmware notes below).
+-2. If yaw oscillates ±1 rad/s: `ET_K_MAX_YAW` is still too high — reduce it.
+-3. If yaw drift is slow but acceptable: robot is near stable. Proceed to stage 3.
+-4. Target: `|tau_L − tau_R| < 0.2 Nm` at steady state.
++### Heading Surface
+ 
+-### Stage 3 — Position hold
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `SMC_YAW_LAMBDA` | 0.15 s | Yaw-rate weight. Was 0.30 — caused yaw torque to dominate balance at moderate spin. |
++| `SMC_YAW_PHI` | 0.20 rad | Heading boundary-layer width. |
+ 
+-Goal: robot returns to starting position after being pushed.
++### Heading Adaptive Gain
+ 
+-1. Set `ET_GAMMA = 0.05` m⁻¹.
+-2. Push robot ~0.2 m forward; watch `x_odom` in plotter — should return toward 0.
+-3. If balance destabilises: reduce `ET_GAMMA` (0.05 → 0.02).
+-4. If robot oscillates in position: increase `SMC_BETA` slightly or reduce `ET_GAMMA`.
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `ET_K_MAX_YAW` | 0.15 A | Max differential current. Must stay well below `ET_K_MIN_BAL` or balance loses. |
++| `ET_K_MIN_YAW` | 0.02 A | Minimum heading correction. |
++| `ET_K_SIGMA_YAW` | 0.10 rad | Half-saturation point for yaw gain. |
+ 
+-### Stage 4 — Event rate verification
++### Event Trigger Thresholds
+ 
+-Goal: confirm self-quiescence (events slow down at equilibrium).
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `ET_ETA_BAL` | 0.20 | Relative balance threshold. Decrease → more frequent triggers. |
++| `ET_EPS_BAL` | 0.008 rad | Absolute floor. Must be above IMU noise (~0.003 rad). |
++| `ET_ETA_YAW` | 0.05 | Near-continuous heading trigger. Low to prevent ZOH overshoot oscillation. |
++| `ET_EPS_YAW` | 0.003 rad | Absolute floor for heading. |
+ 
+-Watch in plotter: **IET_bal**, **IET_yaw**.
++### Periodic Floor (PETASMC)
+ 
+-- At equilibrium: IET_bal should be > 100 ms (vs 20 ms fixed-rate baseline).
+-- During disturbance: IET_bal should drop toward 20–40 ms.
+-- IET should never be < 2 × dt = 40 ms (Zeno check).
++| Parameter | Value | Effect |
++|-----------|-------|--------|
++| `ET_MIN_IET_BAL` | 0.020 s | Minimum time between balance updates (50 Hz floor). |
++| `ET_MIN_IET_YAW` | 0.020 s | Minimum time between heading updates. |
+ 
+ ---
+ 
+ ## Diagnostics Plotter
+ 
+-The live plotter opens automatically (`enabled=True` in `twowheeledrobot_env.py`). Panels:
++The live plotter opens automatically during manual control. Panels:
+ 
+-| Panel | Signals | What to look for |
+-|-------|---------|-----------------|
+-| Tilt | tilt (deg), theta_des | Settling to 0°, no sustained oscillation |
+-| Tilt rate | θ̇ (rad/s) | Should be small and quiet at equilibrium |
+-| Yaw rate | ψ̇ (rad/s) | Should be near 0 at equilibrium |
+-| Torques | τ_L, τ_R (Nm) | Should be symmetric and small at equilibrium |
+-| Velocity | vel_cmd, vel_fwd (m/s) | vel_fwd should track vel_cmd and return to 0 |
+-| Surfaces | s_bal, s_yaw (rad) | Should converge toward 0 |
+-| Triggers | trig_bal, trig_yaw | Dense near disturbance, sparse at equilibrium |
+-| IET | IET_bal, IET_yaw (s) | Increases at equilibrium (self-quiescence) |
+-| Position | x_odom (m) | Returns to 0 when vel_cmd = 0 (Stage 3+) |
++| Panel | What to look for |
++|-------|-----------------|
++| Tilt | Settling to 0°, no sustained oscillation |
++| Tilt rate | Small and quiet at equilibrium |
++| Yaw rate | Near 0 at equilibrium |
++| Torques | Symmetric (τ_L ≈ τ_R) and small at equilibrium |
++| Velocity | vel_fwd tracks vel_cmd |
++| Surfaces | s_bal, s_yaw converging toward 0 |
++| Triggers | Dense near disturbance, sparse at equilibrium |
++| IET | Grows at equilibrium — confirms self-quiescence |
++| Position | Returns to 0 when vel_cmd = 0 (after enabling ET_GAMMA) |
+ 
+ ---
+ 
+-## Key Invariants (do not violate)
++## Key Invariants
+ 
+-- `ET_K_MAX_YAW << ET_K_MIN_BAL` — yaw torque budget must be a small fraction of balance
+-- `ET_EPS_BAL > 3 × IMU_noise` — prevents Zeno triggering from sensor noise
+-- Left wheel torque sign negation in the translation layer — matches mirrored USD mesh convention
+-- CyberGear legs initialized to IK equilibrium at reset — prevents violent jump on first step
++- `ET_K_MAX_YAW` ≪ `ET_K_MIN_BAL` — yaw torque must be a small fraction of balance budget
++- `ET_EPS_BAL` > 3 × IMU noise — prevents noise from causing Zeno triggering
++- Left wheel torque sign negated in translation layer — matches mirrored USD mesh
++- CyberGear legs initialised to IK equilibrium at reset — prevents violent jump on first step
+ 
+ ---
+ 
+@@ -210,26 +306,35 @@ TwoWheeledRobot/
+ ├── README.md
+ ├── CLAUDE.md                          — AI assistant context
+ ├── compute_lqr_gains.py               — Offline LQR gain design (scipy CARE)
+-├── source/TwoWheeledRobot/TwoWheeledRobot/tasks/
+-│   └── direct/twowheeledrobot/
+-│       ├── control.py                 ← PRIMARY: ETASMC controller
+-│       ├── kinematics.py              — CyberGear stance angle IK
+-│       ├── plotter.py                 — Isaac Lab live diagnostic plotter
+-│       ├── robot_cfg.py               — USD spawn + actuator config
+-│       ├── sim_params.py              — PhysX parameters (friction, CoM offsets)
+-│       └── twowheeledrobot_env.py     — Isaac Lab direct env (calls control.py)
+-├── RealImplementationCode/            — C firmware reference (mirrors control.py)
++├── source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/
++│   ├── control.py                     ← PETASMC controller (primary file)
++│   ├── petasmc_rl_env.py              ← RL gain-scheduling environment
++│   ├── petasmc_rl_env_cfg.py          ← RL env configuration
++│   ├── twowheeledrobot_env.py         ← Manual control environment
++│   ├── twowheeledrobot_env_cfg.py
++│   ├── kinematics.py                  — CyberGear stance angle IK
++│   ├── plotter.py                     — Live diagnostic plotter
++│   ├── tuner.py                       — Live SMC parameter tuner
++│   ├── robot_cfg.py                   — USD spawn + actuator config
++│   ├── sim_params.py                  — PhysX parameters
++│   └── agents/
++│       ├── rsl_rl_ppo_cfg.py          — PPO config (manual env)
++│       └── rsl_rl_petasmc_cfg.py      — PPO config (RL gain scheduler)
++├── RealImplementationCode/            — C firmware (mirrors control.py exactly)
+ └── scripts/
+-    ├── zero_agent.py                  — Run sim with control.py (no RL)
+-    └── rsl_rl/, skrl/, sb3/           — RL training/inference scripts
++    ├── zero_agent.py                  — Run manual control sim
++    └── rsl_rl/, skrl/, sb3/           — RL training + playback scripts
+ ```
+ 
+ ---
+ 
+-## IMU Axis Convention
++## Firmware Correspondence
+ 
+-```python
+-IMU_TILT_GRAVITY_AXIS = 1   # projected_gravity_b[:, 1] — forward tilt (positive = leaning forward)
+-IMU_TILT_RATE_AXIS    = 1   # ang_vel_b[:, 1]           — tilt rate
+-IMU_YAW_RATE_AXIS     = 2   # ang_vel_b[:, 2]           — yaw rate (positive = CCW from above)
+-```
++`control.py` is designed to translate 1:1 to the C firmware:
++
++| Python | C firmware |
++|--------|-----------|
++| `current_left / current_right` | `DDSM115setCurrent()` |
++| `desired_angle` | `motor->desired_angle` (after `setMechanicalZero()`) |
++| CyberGear kp / kd | `CyberGearMotorList` init values in `cybergear.c` |
++| IMU axes 1, 1, 2 | Confirmed from live hardware debug |
+diff --git a/scripts/rsl_rl/__pycache__/cli_args.cpython-311.pyc b/scripts/rsl_rl/__pycache__/cli_args.cpython-311.pyc
+index 9dd3a9c..0029dba 100644
+Binary files a/scripts/rsl_rl/__pycache__/cli_args.cpython-311.pyc and b/scripts/rsl_rl/__pycache__/cli_args.cpython-311.pyc differ
+diff --git a/scripts/rsl_rl/play.py b/scripts/rsl_rl/play.py
+index 91c7af7..b1951c4 100644
+--- a/scripts/rsl_rl/play.py
++++ b/scripts/rsl_rl/play.py
+@@ -34,6 +34,7 @@ parser.add_argument(
+     help="Use the pre-trained checkpoint from Nucleus.",
+ )
+ parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
++parser.add_argument("--num_steps", type=int, default=0, help="Stop after this many steps (0 = run forever).")
+ # append RSL-RL cli arguments
+ cli_args.add_rsl_rl_args(parser)
+ # append AppLauncher cli args
+@@ -167,16 +168,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+     else:
+         normalizer = None
+ 
+-    # export policy to onnx/jit
++    # export policy to jit/onnx — wrapped so a failed export never blocks play
+     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
++    try:
++        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
++        print(f"[INFO]: JIT policy exported to: {export_model_dir}/policy.pt")
++    except Exception as e:
++        print(f"[WARNING]: JIT export failed ({e}) — skipping.")
++    try:
++        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
++        print(f"[INFO]: ONNX policy exported to: {export_model_dir}/policy.onnx")
++    except Exception as e:
++        print(f"[WARNING]: ONNX export failed ({e}) — skipping.")
+ 
+     dt = env.unwrapped.step_dt
+ 
+     # reset environment
+     obs = env.get_observations()
+     timestep = 0
++    print("[INFO]: Simulation running. Press Ctrl+C to stop.")
+     # simulate environment
+     while simulation_app.is_running():
+         start_time = time.time()
+@@ -188,11 +198,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+             obs, _, dones, _ = env.step(actions)
+             # reset recurrent states for episodes that have terminated
+             policy_nn.reset(dones)
+-        if args_cli.video:
+-            timestep += 1
+-            # Exit the play loop after recording one video
+-            if timestep == args_cli.video_length:
+-                break
++        timestep += 1
++
++        # periodic console output so the user can see it is running
++        if timestep % 100 == 0:
++            ctrl = env.unwrapped._controller
++            print(
++                f"[step {timestep:5d}]  "
++                f"tilt={ctrl.last.get('tilt', 0.0):+6.2f}°  "
++                f"IET_bal={ctrl.last.get('iet_bal', 0.0)*1000:.1f}ms  "
++                f"T_min_bal={float(ctrl.et_min_iet_bal[0] if hasattr(ctrl.et_min_iet_bal, '__len__') else ctrl.et_min_iet_bal)*1000:.1f}ms  "
++                f"K_max_bal={float(ctrl.et_k_max_bal[0] if hasattr(ctrl.et_k_max_bal, '__len__') else ctrl.et_k_max_bal):.2f}A"
++            )
++
++        if args_cli.video and timestep == args_cli.video_length:
++            break
++        if args_cli.num_steps > 0 and timestep >= args_cli.num_steps:
++            print(f"[INFO]: Reached {args_cli.num_steps} steps — stopping.")
++            break
+ 
+         # time delay for real-time evaluation
+         sleep_time = dt - (time.time() - start_time)
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__init__.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__init__.py
+index 31b84fa..42ccd5e 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__init__.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__init__.py
+@@ -12,6 +12,16 @@ from . import agents
+ ##
+ 
+ 
++gym.register(
++    id="Template-Twowheeledrobot-Petasmc-v0",
++    entry_point=f"{__name__}.petasmc_rl_env:PetasmcRlEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.petasmc_rl_env_cfg:PetasmcRlEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_petasmc_cfg:PetasmcPPORunnerCfg",
++    },
++)
++
+ gym.register(
+     id="Template-Twowheeledrobot-Direct-v0",
+     entry_point=f"{__name__}.twowheeledrobot_env:TwowheeledrobotEnv",
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/__init__.cpython-311.pyc b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/__init__.cpython-311.pyc
+index c241915..ace6996 100644
+Binary files a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/__init__.cpython-311.pyc and b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/__init__.cpython-311.pyc differ
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/control.cpython-311.pyc b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/control.cpython-311.pyc
+index 5e90889..3e63663 100644
+Binary files a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/control.cpython-311.pyc and b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/control.cpython-311.pyc differ
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/tuner.cpython-311.pyc b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/tuner.cpython-311.pyc
+index 18771ff..d7f6c6a 100644
+Binary files a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/tuner.cpython-311.pyc and b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/__pycache__/tuner.cpython-311.pyc differ
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/control.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/control.py
+index 6ef6272..4507820 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/control.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/control.py
+@@ -11,14 +11,23 @@ CyberGear leg motors (MIT mode)
+     Set desired_velocity in rad/s and ff_torque in Nm (leave at 0 for now).
+     kp / kd are the same numbers as in cybergear.c (hardware range 0–500 / 0–5).
+ 
+-Control algorithm: Event-Triggered Adaptive Sliding Mode Control (ETASMC)
++Control algorithm: Periodic Event-Triggered Adaptive Sliding Mode Control (PETASMC)
+ ------------------------------------------------------------
+-Two coupled SMC surfaces with event-triggered zero-order hold (ZOH) and
+-adaptive gain scheduling.  The ZOH holds the last computed control output
+-between events; a new output is computed only when a surface-based event
+-fires.  Near equilibrium events space out naturally (self-quiescence) and
+-the gain scales down, eliminating chattering without sacrificing recovery
+-authority during large disturbances.
++Two coupled SMC surfaces with periodic event-triggered zero-order hold (ZOH)
++and adaptive gain scheduling.  A minimum inter-event time (periodic floor)
++bounds the worst-case update rate; the event condition allows early firing
++within that window when a disturbance is detected.  Near equilibrium the
++controller self-quiesces toward the floor rate; during large disturbances it
++fires as fast as the sensor period allows.  The adaptive gain scales with
++surface magnitude, eliminating chattering without sacrificing recovery
++authority.
++
++  Periodic floor (minimum inter-event time):
++    Trigger is only eligible after et_min_iet seconds have elapsed since the
++    last trigger.  Bounds worst-case update rate to 1/et_min_iet Hz during
++    quiet operation; event condition allows early firing for impulse forces
++    that occur within the window.
++    Default: 20 ms → 50 Hz floor (matches prior fixed-rate tuning baseline).
+ 
+   Balance + velocity + position surface (common mode — equal current both wheels):
+     x_odom  = 0.5·R·(−φ_L + φ_R)           (wheel odometry, direct encoder read)
+@@ -109,7 +118,7 @@ SMC_YAW_LAMBDA: float = 0.15   # s    — yaw-rate weight (halved from 0.30)
+ SMC_YAW_PHI:   float = 0.20   # rad  — boundary-layer width (widened back to 0.20 for smoother yaw)
+ 
+ # ──────────────────────────────────────────────────────────────────────────────
+-#  Event-Triggered Adaptive SMC (ETASMC) parameters
++#  Periodic Event-Triggered Adaptive SMC (PETASMC) parameters
+ # ──────────────────────────────────────────────────────────────────────────────
+ 
+ # Position hold — weight of odometry error term in balance surface.
+@@ -148,6 +157,13 @@ ET_EPS_BAL: float = 0.008   # rad — absolute floor
+ ET_ETA_YAW: float = 0.05    # near-continuous: fires whenever s_yaw changes > 5 %
+ ET_EPS_YAW: float = 0.003   # rad — absolute floor
+ 
++# Minimum inter-event time — periodic floor (PETASMC).
++# Trigger is blocked until this much time has elapsed since the last update.
++# Default 20 ms → worst-case 50 Hz, matching prior fixed-rate tuning baseline.
++# Early firing is still allowed within the window when the event condition fires.
++ET_MIN_IET_BAL: float = 0.020   # s
++ET_MIN_IET_YAW: float = 0.020   # s
++
+ 
+ # ──────────────────────────────────────────────────────────────────────────────
+ #  Controller
+@@ -181,6 +197,8 @@ class RobotController:
+         self.et_eps_bal     = ET_EPS_BAL
+         self.et_eta_yaw     = ET_ETA_YAW
+         self.et_eps_yaw     = ET_EPS_YAW
++        self.et_min_iet_bal = ET_MIN_IET_BAL
++        self.et_min_iet_yaw = ET_MIN_IET_YAW
+ 
+         # Read by the plotter each step
+         self.last: dict = {}
+@@ -214,6 +232,12 @@ class RobotController:
+         self._t_since_bal = torch.zeros(num_envs, device=device, dtype=torch.float32)
+         self._t_since_yaw = torch.zeros(num_envs, device=device, dtype=torch.float32)
+ 
++        # ── Current-step cache (read by RL env each step) ────────────────────
++        self._s_bal_cur    = torch.zeros(num_envs, device=device, dtype=torch.float32)
++        self._s_yaw_cur    = torch.zeros(num_envs, device=device, dtype=torch.float32)
++        self._trig_bal_cur = torch.zeros(num_envs, device=device, dtype=torch.bool)
++        self._trig_yaw_cur = torch.zeros(num_envs, device=device, dtype=torch.bool)
++
+     def reset(self, env_ids=None) -> None:
+         if env_ids is None:
+             self._heading.zero_()
+@@ -227,6 +251,10 @@ class RobotController:
+             self._iet_yaw.zero_()
+             self._t_since_bal.zero_()
+             self._t_since_yaw.zero_()
++            self._s_bal_cur.zero_()
++            self._s_yaw_cur.zero_()
++            self._trig_bal_cur.zero_()
++            self._trig_yaw_cur.zero_()
+         else:
+             self._heading[env_ids]     = 0.0
+             self._heading_cmd[env_ids] = 0.0
+@@ -239,6 +267,10 @@ class RobotController:
+             self._iet_yaw[env_ids]     = 0.0
+             self._t_since_bal[env_ids] = 0.0
+             self._t_since_yaw[env_ids] = 0.0
++            self._s_bal_cur[env_ids]   = 0.0
++            self._s_yaw_cur[env_ids]   = 0.0
++            self._trig_bal_cur[env_ids] = False
++            self._trig_yaw_cur[env_ids] = False
+ 
+     def compute(
+         self,
+@@ -286,9 +318,21 @@ class RobotController:
+         e_heading = (e_heading + math.pi) % (2.0 * math.pi) - math.pi   # wrap ±π
+         s_yaw = e_heading + self.smc_yaw_lambda * (self.yaw_rate_cmd - psi_dot)  # (N,) rad
+ 
+-        # ── 5. Event triggers (relative + absolute, Zeno-free) ───────────────────
+-        trig_bal = (s_bal - self._s_bal_last).abs() > self.et_eta_bal * self._s_bal_last.abs() + self.et_eps_bal
+-        trig_yaw = (s_yaw - self._s_yaw_last).abs() > self.et_eta_yaw * self._s_yaw_last.abs() + self.et_eps_yaw
++        # ── 5. Event triggers — periodic floor + surface threshold (PETASMC) ────
++        # Trigger is gated by the minimum IET: no update until et_min_iet has
++        # elapsed.  Within the window the surface condition allows early firing
++        # for impulse disturbances.  Worst-case rate = 1/et_min_iet Hz.
++        can_trigger_bal = self._t_since_bal >= self.et_min_iet_bal
++        can_trigger_yaw = self._t_since_yaw >= self.et_min_iet_yaw
++
++        trig_bal = can_trigger_bal & (
++            (s_bal - self._s_bal_last).abs() >
++            self.et_eta_bal * self._s_bal_last.abs() + self.et_eps_bal
++        )
++        trig_yaw = can_trigger_yaw & (
++            (s_yaw - self._s_yaw_last).abs() >
++            self.et_eta_yaw * self._s_yaw_last.abs() + self.et_eps_yaw
++        )
+ 
+         # ── 6. Adaptive gain — smooth rational schedule ──────────────────────────
+         # K(|s|) = K_min + (K_max − K_min)·|s|/(|s| + σ)
+@@ -341,6 +385,12 @@ class RobotController:
+         cg_vel = _z4 + desired_velocity
+         cg_ff  = _z4 + ff_torque
+ 
++        # Cache current-step values for RL env access
++        self._s_bal_cur    = s_bal
++        self._s_yaw_cur    = s_yaw
++        self._trig_bal_cur = trig_bal
++        self._trig_yaw_cur = trig_yaw
++
+         self.last = {
+             "tilt":        math.degrees(float(theta[0])),
+             "tilt_rate":   float(theta_dot[0]),
+@@ -350,7 +400,7 @@ class RobotController:
+             "torque_R":    float(tr[0]),
+             "vel_cmd":     self.vel_cmd,
+             "vel_fwd":     float(v[0]),
+-            # ETASMC diagnostics
++            # PETASMC diagnostics
+             "s_bal":       float(s_bal[0]),
+             "s_yaw":       float(s_yaw[0]),
+             "trig_bal":    float(trig_bal[0]),
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tuner.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tuner.py
+index 69538c3..31b565a 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tuner.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/tuner.py
+@@ -43,6 +43,8 @@ _TRIGGER_PARAMS = [
+     ("et_eps_bal",     "ε_bal  [rad]",      0.000, 0.100, 0.001, "{:.4f}"),
+     ("et_eta_yaw",     "η_yaw  (relative)", 0.000, 1.000, 0.010, "{:.3f}"),
+     ("et_eps_yaw",     "ε_yaw  [rad]",      0.000, 0.100, 0.001, "{:.4f}"),
++    ("et_min_iet_bal", "T_min_bal  [s]",    0.005, 0.100, 0.001, "{:.3f}"),
++    ("et_min_iet_yaw", "T_min_yaw  [s]",    0.005, 0.100, 0.001, "{:.3f}"),
+ ]
+ 
+ _ALL_SECTIONS = [
+@@ -149,6 +151,7 @@ class SMCTuner:
+             ET_K_MAX_BAL, ET_K_MIN_BAL, ET_K_SIGMA_BAL,
+             ET_K_MAX_YAW, ET_K_MIN_YAW, ET_K_SIGMA_YAW,
+             ET_ETA_BAL, ET_EPS_BAL, ET_ETA_YAW, ET_EPS_YAW,
++            ET_MIN_IET_BAL, ET_MIN_IET_YAW,
+         )
+         defaults = {
+             "smc_alpha":      SMC_ALPHA,
+@@ -167,6 +170,8 @@ class SMCTuner:
+             "et_eps_bal":     ET_EPS_BAL,
+             "et_eta_yaw":     ET_ETA_YAW,
+             "et_eps_yaw":     ET_EPS_YAW,
++            "et_min_iet_bal": ET_MIN_IET_BAL,
++            "et_min_iet_yaw": ET_MIN_IET_YAW,
+         }
+         for attr, val in defaults.items():
+             setattr(self._controller, attr, val)
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/twowheeledrobot_env.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/twowheeledrobot_env.py
+index a92fec2..b1888b9 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/twowheeledrobot_env.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/twowheeledrobot_env.py
+@@ -26,6 +26,7 @@ from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
+ 
+ from .twowheeledrobot_env_cfg import TwowheeledrobotEnvCfg
+ from .plotter import RealtimePlotter
++from .tb_logger import TBLogger
+ from .tuner import SMCTuner
+ from .control import (
+     RobotController,
+@@ -98,6 +99,11 @@ class TwowheeledrobotEnv(DirectRLEnv):
+             update_hz=5.0,
+         )
+ 
++        # ---- TensorBoard logger ------------------------------------------ #
++        # Logs all controller diagnostics to logs/tensorboard/<timestamp>/.
++        # Start the viewer with: tensorboard --logdir logs/tensorboard
++        self._tb = TBLogger(enabled=True, log_every_n=10)
++
+         # ---- Real-time SMC parameter tuner ------------------------------- #
+         self._tuner = SMCTuner(controller=self._controller, enabled=True)
+ 
+@@ -254,6 +260,7 @@ class TwowheeledrobotEnv(DirectRLEnv):
+         )
+ 
+         self._plotter.push(self._controller.last)
++        self._tb.push(self._controller.last)
+ 
+         # DDSM115 — current control → torque
+         efforts = torch.stack([torque_left, torque_right], dim=1)
