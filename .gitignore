@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Isaac Lab / Hydra / training output
+logs/
+outputs/
+wandb/
+runs/
+
+# Local environment/cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+_isaac_sim/

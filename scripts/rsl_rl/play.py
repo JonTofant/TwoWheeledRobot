@@ -202,14 +202,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         # periodic console output so the user can see it is running
         if timestep % 100 == 0:
-            ctrl = env.unwrapped._controller
-            print(
-                f"[step {timestep:5d}]  "
-                f"tilt={ctrl.last.get('tilt', 0.0):+6.2f}°  "
-                f"IET_bal={ctrl.last.get('iet_bal', 0.0)*1000:.1f}ms  "
-                f"T_min_bal={float(ctrl.et_min_iet_bal[0] if hasattr(ctrl.et_min_iet_bal, '__len__') else ctrl.et_min_iet_bal)*1000:.1f}ms  "
-                f"K_max_bal={float(ctrl.et_k_max_bal[0] if hasattr(ctrl.et_k_max_bal, '__len__') else ctrl.et_k_max_bal):.2f}A"
-            )
+            unwrapped = env.unwrapped
+            if hasattr(unwrapped, "_controller"):
+                # SMC / PETASMC env — print controller internals
+                ctrl = unwrapped._controller
+                print(
+                    f"[step {timestep:5d}]  "
+                    f"tilt={ctrl.last.get('tilt', 0.0):+6.2f}°  "
+                    f"IET_bal={ctrl.last.get('iet_bal', 0.0)*1000:.1f}ms  "
+                    f"T_min_bal={float(ctrl.et_min_iet_bal[0] if hasattr(ctrl.et_min_iet_bal, '__len__') else ctrl.et_min_iet_bal)*1000:.1f}ms  "
+                    f"K_max_bal={float(ctrl.et_k_max_bal[0] if hasattr(ctrl.et_k_max_bal, '__len__') else ctrl.et_k_max_bal):.2f}A"
+                )
+            else:
+                # Stand-up env — print episode stats
+                ep_len = unwrapped.episode_length_buf.float().mean().item()
+                print(f"[step {timestep:5d}]  mean_ep_len={ep_len:.1f}")
 
         if args_cli.video and timestep == args_cli.video_length:
             break

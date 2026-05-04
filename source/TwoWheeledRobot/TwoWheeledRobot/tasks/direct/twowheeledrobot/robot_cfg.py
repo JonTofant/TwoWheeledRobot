@@ -4,9 +4,8 @@ Robot articulation configuration for the custom two-wheeled robot.
 Wheel joints: Revolute_13 (left) and Revolute_6 (right)
 These are configured as pure effort-controlled actuators.
 
-Drive gains (stiffness / damping) are imported from control.py so that
-the USD can keep them at 0 and Python sets the desired values at
-simulation start.
+Drive gains (stiffness / damping) are imported from sim_params.py so that the
+USD can keep them at 0 and Python sets the desired values at simulation start.
 """
 
 import os
@@ -14,11 +13,16 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 import isaaclab.sim as sim_utils
 
-from .control import WHEEL_DRIVE_STIFFNESS, CYBERGEAR_STIFFNESS, CYBERGEAR_DAMPING
 from .sim_params import (
-    LINEAR_DAMPING, ANGULAR_DAMPING,
-    SOLVER_POSITION_ITERS, SOLVER_VELOCITY_ITERS,
-    WHEEL_INTERNAL_DAMPING, BEARING_DAMPING,
+    ANGULAR_DAMPING,
+    BEARING_DAMPING,
+    CYBERGEAR_DAMPING,
+    CYBERGEAR_STIFFNESS,
+    LINEAR_DAMPING,
+    SOLVER_POSITION_ITERS,
+    SOLVER_VELOCITY_ITERS,
+    WHEEL_DRIVE_STIFFNESS,
+    WHEEL_INTERNAL_DAMPING,
 )
 
 # USD path — ColectedUSD_v2/World0.usd lives inside docs/
