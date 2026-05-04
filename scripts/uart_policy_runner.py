@@ -16,7 +16,8 @@ Host -> STM32, one JSON object per line:
       "action": [a0, a1, a2, a3, a4, a5]
     }
 
-Angles are radians by default. Pass --degrees if the STM32 packet uses degrees.
+Angles are radians by default. DDSM velocities are rad/s. Pass --degrees if the
+STM32 packet uses degrees.
 The exported policy is expected to be the JIT file produced by scripts/rsl_rl/play.py.
 """
 
@@ -34,13 +35,16 @@ import serial
 import torch
 
 
+DDSM115_KT = 0.75
 LO_EXT = math.radians(10.0)
 LIM = math.pi / 2.0
 CG_JOINT_LO = torch.tensor([-LO_EXT, -LIM, -LIM, -LO_EXT], dtype=torch.float32)
 CG_JOINT_HI = torch.tensor([LIM, LO_EXT, LO_EXT, LIM], dtype=torch.float32)
 CG_EXT_SIGN = torch.tensor([1.0, -1.0, -1.0, 1.0], dtype=torch.float32)
 CG_NORM_SPAN = LO_EXT + LIM
-WHEEL_CURRENT_MAX_A = 8.0
+WHEEL_TORQUE_COMMAND_LIMIT_NM = 1.6
+WHEEL_CURRENT_MAX_A = WHEEL_TORQUE_COMMAND_LIMIT_NM / DDSM115_KT
+WHEEL_VELOCITY_NORM = 15.7
 
 
 @dataclass
@@ -119,7 +123,8 @@ def build_observation(state: RobotState, prev_action: torch.Tensor) -> torch.Ten
     grav_3d = projected_gravity_from_roll_pitch(state.roll, state.pitch)
     ang_vel_norm = torch.tensor(state.gyro, dtype=torch.float32) / 10.0
     cg_norm = normalize_cg_positions(torch.tensor(state.cg, dtype=torch.float32))
-    obs = torch.cat([grav_3d, ang_vel_norm, cg_norm, prev_action], dim=0)
+    wheel_vel_norm = torch.tensor(state.ddsm, dtype=torch.float32) / WHEEL_VELOCITY_NORM
+    obs = torch.cat([grav_3d, ang_vel_norm, cg_norm, wheel_vel_norm, prev_action], dim=0)
     return torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0).unsqueeze(0)
 
 

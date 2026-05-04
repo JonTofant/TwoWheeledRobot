@@ -38,13 +38,14 @@ Generated files such as `logs/`, `outputs/`, `__pycache__/`, and egg-info are in
 
 ## Stand-Up Task
 
-Observation space: 16 values, manually normalized for firmware parity.
+Observation space: 18 values, manually normalized for firmware parity.
 
 ```text
 [0:3]   projected_gravity_b
 [3:6]   body angular velocity / 10 rad/s
 [6:10]  CyberGear joint extension fractions
-[10:16] previous action
+[10:12] DDSM115 wheel velocities / 15.7 rad/s
+[12:18] previous action
 ```
 
 `CyberGear joint extension fractions` are normalized CyberGear joint positions in this joint order:
@@ -64,6 +65,8 @@ Action space: 6 values in `[-1, 1]`.
 ```
 
 The left wheel torque is negated in simulation because the USD wheel is mirrored. Keep that sign convention aligned with firmware.
+
+The wheel actuator hard limit in simulation is 2.0 Nm, matching the measured DDSM115 peak. The policy command scaling is intentionally lower: `wheel_torque_command_limit = 1.6 Nm`, or about `2.13 A` with `Kt = 0.75 Nm/A`, so retraining keeps a safety margin for the real robot.
 
 ## Running
 
@@ -108,7 +111,16 @@ Host to STM32, one JSON object per line:
 {"cg_target":[0.0,0.0,0.0,0.0],"wheel_current":[0.0,0.0],"action":[0.0,0.0,0.0,0.0,0.0,0.0]}
 ```
 
-Roll, pitch, yaw, gyro, and CyberGear angles are radians by default. Use `--degrees` if the STM32 packet sends degrees and deg/s. DDSM115 velocity is accepted in the input packet for logging/safety, but the current trained policy does not use wheel velocity in its observation.
+Roll, pitch, yaw, gyro, and CyberGear angles are radians by default. Use `--degrees` if the STM32 packet sends degrees and deg/s. DDSM115 velocities are part of the observation and should be sent as `[left, right]` wheel angular velocity in rad/s using the same sign convention as simulation.
+
+To sanity-check policy outputs without the robot, run a synthetic roll/pitch sweep:
+
+```bash
+python scripts/test_policy_angle_sweep.py \
+  --policy logs/rsl_rl/standup_two_wheel/<run>/exported/policy.pt
+```
+
+This prints normalized actions, CyberGear target angles, and wheel current commands for upright, side-fallen, forward/back-fallen, and diagonal poses. Use it to catch obvious sign mistakes before trying UART on hardware.
 
 ## Tuning Notes
 

@@ -67,15 +67,16 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
     actuators={
         # ------------------------------------------------------------------ #
         # Wheel drive joints — current-controlled (DDSM115).                 #
-        #   Kt  = 0.75 Nm/A,  I_max = 8 A  →  τ_peak = 6 Nm (motor)        #
-        #   User-measured peak at wheel: 2 Nm                                #
+        #   Kt  = 0.75 Nm/A                                                  #
+        #   Absolute measured peak at wheel: 2 Nm                             #
+        #   Policy commands are scaled lower in standup_env_cfg.py for margin.#
         #   Rated continuous: 0.96 Nm                                        #
         #   Deadzone: ±0.04 A × 0.75 = ±0.03 Nm (applied in control.py)    #
         #   Internal friction: back-EMF + gear train  (WHEEL_INTERNAL_DAMPING)#
         # ------------------------------------------------------------------ #
         "wheel_joints": ImplicitActuatorCfg(
             joint_names_expr=["DDSM115_Levi", "DDSM115_Desni"],
-            effort_limit_sim=2.0,          # Nm — real measured peak
+            effort_limit_sim=2.0,          # Nm — absolute measured peak
             velocity_limit=15.7,           # rad/s — ~150 RPM no-load at 24 V
             stiffness=WHEEL_DRIVE_STIFFNESS,
             damping=WHEEL_INTERNAL_DAMPING,  # 0.05 Nm·s/rad — back-EMF + gear friction

@@ -4,18 +4,19 @@ Standup RL Environment configuration for the Two-Wheeled Leg Robot.
 The policy learns to self-right the robot from any fallen orientation (side,
 forward, backward, upside down) to the upright balancing position.  It is
 designed for deployment on the STM32F446RE microcontroller, so the network
-is constrained to [32, 32] hidden layers (~1800 float32 parameters, 7.2 KB).
+is constrained to [32, 32] hidden layers (~1862 float32 parameters, 7.4 KB).
 
-Observation (16 dims) — all manually normalised to [-1, 1], no running stats:
+Observation (18 dims) — all manually normalised to [-1, 1], no running stats:
     [0–2]   projected_gravity_b (3D)    full gravity vector in body frame
     [3–5]   ang_vel_b / 10.0           body angular velocities / 10 rad/s
     [6–9]   CyberGear position         zero-centred extension fraction
-    [10–15] prev_actions (6D)           leg + wheel actions from last step
+    [10–11] DDSM115 wheel velocity      left/right wheel velocity / 15.7 rad/s
+    [12–17] prev_actions (6D)           leg + wheel actions from last step
 
 Action (6 dims):
     [0–3]   CyberGear absolute angles [fl, fr, bl, br]
-    [4]     Left  wheel current (A, ±8 A range)
-    [5]     Right wheel current (A, ±8 A range)
+    [4]     Left  wheel current command
+    [5]     Right wheel current command
 
 Spawn scenarios (sampled each episode reset):
     right side down   15 % — roll ≈ −π/2
@@ -40,7 +41,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
 from .robot_cfg import TWO_WHEELED_ROBOT_CFG
-from .sim_params import PHYSICS_DT, CONTROL_DECIMATION
+from .sim_params import PHYSICS_DT, CONTROL_DECIMATION, DDSM115_KT
 
 
 @configclass
@@ -50,7 +51,7 @@ class StandupEnvCfg(DirectRLEnvCfg):
     episode_length_s: float = 10.0            # 500 steps — generous budget
 
     # ── RL interface ──────────────────────────────────────────────────────────
-    observation_space: int = 16
+    observation_space: int = 18
     action_space: int = 6
     state_space: int = 0
 
@@ -112,7 +113,11 @@ class StandupEnvCfg(DirectRLEnvCfg):
     success_steps_required: int    = 2      # consecutive steps ≈ 40 ms at 50 Hz
 
     # ── Action parameterisation ───────────────────────────────────────────────
-    wheel_current_max: float = 8.0   # A — full DDSM115 current range; PhysX actuator still clips to real torque limit
+    # Absolute PhysX wheel actuator limit is 2.0 Nm in robot_cfg.py.  Command a
+    # lower torque envelope for hardware margin: 1.6 Nm / 0.75 Nm/A = 2.13 A.
+    wheel_torque_command_limit: float = 1.6
+    wheel_current_max: float = wheel_torque_command_limit / DDSM115_KT
+    wheel_velocity_norm: float = 15.7   # rad/s — DDSM115 no-load velocity used for observation scaling
 
     # Standup is a high-impulse maneuver, so use fixed strong CyberGear gains
     # instead of reset-time randomisation.  This makes the legs reliably push

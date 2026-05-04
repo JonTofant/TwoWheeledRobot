@@ -282,6 +282,7 @@ class StandupEnv(DirectRLEnv):
         proj_grav = self.bno080.data.projected_gravity_b   # (N, 3)
         ang_vel_b = self.bno080.data.ang_vel_b             # (N, 3)
         cg_pos    = self.robot.data.joint_pos[:, self._cg_ids]   # (N, 4)
+        wheel_vel = self.robot.data.joint_vel[:, self._wheel_ids]  # (N, 2)
 
         # ── Sensor noise ──────────────────────────────────────────────────────
         proj_grav = proj_grav + torch.randn_like(proj_grav) * self.cfg.noise_proj_grav_std
@@ -304,15 +305,19 @@ class StandupEnv(DirectRLEnv):
         cg_shifted = cg_pos * self._cg_ext_sign + cg_lo_ext   # 0 at −10°, span at +90°
         cg_norm = cg_shifted / self._cg_norm_span * 2.0 - 1.0  # (N, 4) ∈ [-1, 1]
 
+        # DDSM115 wheel velocity: normalize by no-load speed.
+        wheel_vel_norm = wheel_vel / self.cfg.wheel_velocity_norm  # (N, 2)
+
         # Previous 6 actions: already in [-1, 1] by construction.
         prev_act = self._cur_actions                         # (N, 6)
 
         obs = torch.cat([
-            grav_3d,      # [0–2]   full gravity vector in body frame
-            ang_vel_norm, # [3–5]   angular velocities / 10 rad/s
-            cg_norm,      # [6–9]   CyberGear extension (zero-centred)
-            prev_act,     # [10–15] previous 6 actions
-        ], dim=1)   # (N, 16)
+            grav_3d,        # [0–2]   full gravity vector in body frame
+            ang_vel_norm,   # [3–5]   angular velocities / 10 rad/s
+            cg_norm,        # [6–9]   CyberGear extension (zero-centred)
+            wheel_vel_norm, # [10–11] DDSM115 wheel velocities / no-load speed
+            prev_act,       # [12–17] previous 6 actions
+        ], dim=1)   # (N, 18)
 
         return {
             "policy": torch.nan_to_num(

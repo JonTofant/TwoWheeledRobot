@@ -6,12 +6,12 @@ FPU, 128 KB SRAM, 512 KB Flash).  The [32, 32] hidden-layer constraint is
 hard:
 
     Network parameters:
-        16×32  +  32×32  +  32×6  = 512 + 1024 + 192 = 1728 weights
+        18×32  +  32×32  +  32×6  = 576 + 1024 + 192 = 1792 weights
         + 32 + 32 + 6 = 70 biases
-        Total: 1798 float32 parameters → 7.2 KB Flash  ✓
+        Total: 1862 float32 parameters → 7.4 KB Flash  ✓
 
     SRAM for inference:
-        Activations: max(16, 32, 32, 6) = 32 floats per layer → < 1 KB  ✓
+        Activations: max(18, 32, 32, 6) = 32 floats per layer → < 1 KB  ✓
 
 Policy constraints:
     - Small [32, 32] actor/critic network due to STM32 constraints.

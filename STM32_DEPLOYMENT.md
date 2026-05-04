@@ -8,7 +8,7 @@ Template-Twowheeledrobot-Standup-v0
 
 ## Policy Contract
 
-The trained actor takes 16 normalized `float32` observations and returns 6 actions in `[-1, 1]`.
+The trained actor takes 18 normalized `float32` observations and returns 6 actions in `[-1, 1]`.
 
 Observations:
 
@@ -16,7 +16,8 @@ Observations:
 0..2    projected gravity in body frame
 3..5    body angular velocity / 10 rad/s
 6..9    CyberGear joint extension fraction
-10..15  previous action
+10..11  DDSM115 wheel velocity / 15.7 rad/s
+12..17  previous action
 ```
 
 If the STM32 sends roll/pitch/yaw instead of projected gravity, convert roll and pitch to projected gravity before inference. Yaw does not affect gravity direction and is not used by this policy.
@@ -41,7 +42,7 @@ Actions:
 5     right DDSM115 current command
 ```
 
-The simulation maps wheel actions to current with `wheel_current_max` from `standup_env_cfg.py` and then torque with `DDSM115_KT` from `sim_params.py`.
+The simulation maps wheel actions to current with `wheel_current_max` from `standup_env_cfg.py` and then torque with `DDSM115_KT` from `sim_params.py`. The PhysX actuator hard limit remains 2.0 Nm, but the policy command envelope is lower: 1.6 Nm, or about 2.13 A at 0.75 Nm/A.
 
 ## Sign Convention
 
@@ -107,4 +108,4 @@ Host sends JSON lines:
 {"cg_target":[0.0,0.0,0.0,0.0],"wheel_current":[0.0,0.0],"action":[0.0,0.0,0.0,0.0,0.0,0.0]}
 ```
 
-DDSM115 velocity is read by the runner but is not part of the current trained observation. Retrain the policy before using wheel velocity as an input feature.
+DDSM115 velocity is part of the policy observation. Send `[left, right]` wheel angular velocity in rad/s using the same sign convention as simulation.
