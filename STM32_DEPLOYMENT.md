@@ -19,6 +19,20 @@ Observations:
 10..15  previous action
 ```
 
+If the STM32 sends roll/pitch/yaw instead of projected gravity, convert roll and pitch to projected gravity before inference. Yaw does not affect gravity direction and is not used by this policy.
+
+CyberGear extension fractions are normalized joint positions in this order:
+
+```text
+front_left, front_right, back_left, back_right
+```
+
+The two mirrored joints use opposite signs so that positive normalized value means "more extended" on every leg. The conversion used by the Python UART runner is:
+
+```text
+cg_norm = ((cg_angle * [1,-1,-1,1] + 10deg) / 100deg) * 2 - 1
+```
+
 Actions:
 
 ```text
@@ -69,3 +83,28 @@ python scripts/rsl_rl/play.py \
 ```
 
 Check exported policies under `logs/rsl_rl/standup_two_wheel/<run>/exported/`.
+
+## UART Runner
+
+Host-side runner:
+
+```bash
+python scripts/uart_policy_runner.py \
+  --policy logs/rsl_rl/standup_two_wheel/<run>/exported/policy.pt \
+  --port /dev/ttyACM0 \
+  --baud 115200
+```
+
+STM32 sends JSON lines:
+
+```json
+{"roll":0.0,"pitch":1.57,"yaw":0.0,"gyro":[0.0,0.0,0.0],"cg":[0.0,0.0,0.0,0.0],"ddsm":[0.0,0.0]}
+```
+
+Host sends JSON lines:
+
+```json
+{"cg_target":[0.0,0.0,0.0,0.0],"wheel_current":[0.0,0.0],"action":[0.0,0.0,0.0,0.0,0.0,0.0]}
+```
+
+DDSM115 velocity is read by the runner but is not part of the current trained observation. Retrain the policy before using wheel velocity as an input feature.

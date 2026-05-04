@@ -47,6 +47,14 @@ Observation space: 16 values, manually normalized for firmware parity.
 [10:16] previous action
 ```
 
+`CyberGear joint extension fractions` are normalized CyberGear joint positions in this joint order:
+
+```text
+[front_left, front_right, back_left, back_right]
+```
+
+The physical joint limits are `front_left/back_right = [-10 deg, +90 deg]` and `front_right/back_left = [-90 deg, +10 deg]`. The policy sees those as normalized values near `[-1, +1]`, with sign flips on the mirrored joints so positive means "more extended" for every leg.
+
 Action space: 6 values in `[-1, 1]`.
 
 ```text
@@ -76,6 +84,31 @@ python scripts/rsl_rl/play.py \
 ```
 
 Outputs are written under `logs/rsl_rl/standup_two_wheel/`.
+
+## UART Policy Runner
+
+Run an exported JIT policy against the STM32 over UART:
+
+```bash
+python scripts/uart_policy_runner.py \
+  --policy logs/rsl_rl/standup_two_wheel/<run>/exported/policy.pt \
+  --port /dev/ttyACM0 \
+  --baud 115200
+```
+
+STM32 to host, one JSON object per line:
+
+```json
+{"roll":0.0,"pitch":1.57,"yaw":0.0,"gyro":[0.0,0.0,0.0],"cg":[0.0,0.0,0.0,0.0],"ddsm":[0.0,0.0]}
+```
+
+Host to STM32, one JSON object per line:
+
+```json
+{"cg_target":[0.0,0.0,0.0,0.0],"wheel_current":[0.0,0.0],"action":[0.0,0.0,0.0,0.0,0.0,0.0]}
+```
+
+Roll, pitch, yaw, gyro, and CyberGear angles are radians by default. Use `--degrees` if the STM32 packet sends degrees and deg/s. DDSM115 velocity is accepted in the input packet for logging/safety, but the current trained policy does not use wheel velocity in its observation.
 
 ## Tuning Notes
 
