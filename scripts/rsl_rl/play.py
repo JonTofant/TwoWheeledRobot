@@ -34,6 +34,7 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--num_steps", type=int, default=0, help="Stop after this many steps (0 = run forever).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -167,16 +168,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         normalizer = None
 
-    # export policy to onnx/jit
+    # export policy to jit/onnx — wrapped so a failed export never blocks play
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    try:
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        print(f"[INFO]: JIT policy exported to: {export_model_dir}/policy.pt")
+    except Exception as e:
+        print(f"[WARNING]: JIT export failed ({e}) — skipping.")
+    try:
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+        print(f"[INFO]: ONNX policy exported to: {export_model_dir}/policy.onnx")
+    except Exception as e:
+        print(f"[WARNING]: ONNX export failed ({e}) — skipping.")
 
     dt = env.unwrapped.step_dt
 
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    print("[INFO]: Simulation running. Press Ctrl+C to stop.")
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -188,11 +198,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
-        if args_cli.video:
-            timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+        timestep += 1
+
+        # periodic console output so the user can see it is running
+        if timestep % 100 == 0:
+            unwrapped = env.unwrapped
+            if hasattr(unwrapped, "_controller"):
+                # SMC / PETASMC env — print controller internals
+                ctrl = unwrapped._controller
+                print(
+                    f"[step {timestep:5d}]  "
+                    f"tilt={ctrl.last.get('tilt', 0.0):+6.2f}°  "
+                    f"IET_bal={ctrl.last.get('iet_bal', 0.0)*1000:.1f}ms  "
+                    f"T_min_bal={float(ctrl.et_min_iet_bal[0] if hasattr(ctrl.et_min_iet_bal, '__len__') else ctrl.et_min_iet_bal)*1000:.1f}ms  "
+                    f"K_max_bal={float(ctrl.et_k_max_bal[0] if hasattr(ctrl.et_k_max_bal, '__len__') else ctrl.et_k_max_bal):.2f}A"
+                )
+            else:
+                # Stand-up env — print episode stats
+                ep_len = unwrapped.episode_length_buf.float().mean().item()
+                print(f"[step {timestep:5d}]  mean_ep_len={ep_len:.1f}")
+
+        if args_cli.video and timestep == args_cli.video_length:
+            break
+        if args_cli.num_steps > 0 and timestep >= args_cli.num_steps:
+            print(f"[INFO]: Reached {args_cli.num_steps} steps — stopping.")
+            break
 
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)

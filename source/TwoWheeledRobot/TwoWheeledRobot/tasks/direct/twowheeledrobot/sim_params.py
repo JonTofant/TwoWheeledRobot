@@ -24,6 +24,13 @@ Robot body
   LINEAR_DAMPING           — linear  velocity damping on all links
   ANGULAR_DAMPING          — angular velocity damping on all links
 
+Actuators
+---------
+  DDSM115_KT               — wheel torque constant (Nm/A)
+  WHEEL_DRIVE_STIFFNESS    — PhysX stiffness for effort-controlled wheel joints
+  CYBERGEAR_STIFFNESS      — default CyberGear position gain in simulation
+  CYBERGEAR_DAMPING        — default CyberGear damping gain in simulation
+
 Solver
 ------
   SOLVER_POSITION_ITERS    — PhysX position solver iterations (higher = stiffer)
@@ -39,12 +46,13 @@ CONTROL_DECIMATION:   int   = 4             # control sample time = 5ms × 4 = 2
 # =========================================================================== #
 #  Ground plane                                                                #
 # =========================================================================== #
-# Rubber tire on laminate flooring.  Measured ranges: μ_s ≈ 0.4–0.6,
-# μ_d ≈ 0.3–0.5.  Slip torque per wheel = μ_s × (m·g / 2) × r_wheel
+# Rubber tire on laminate / tile flooring (laboratory environment).
+# Measured ranges: μ_s ≈ 0.4–0.6, μ_d ≈ 0.3–0.5.
+# Slip torque per wheel = μ_s × (m·g / 2) × r_wheel
 # ≈ 0.5 × (3.80 × 9.81 / 2) × 0.0505 ≈ 0.47 Nm.
-# PhysX enforces this automatically — no need to manually clamp torque
-# to the slip threshold; the joint effort limit handles motor saturation.
-GROUND_STATIC_FRICTION:  float = 0.5   # rubber on laminate
+# Using mid-range values; overly high friction (0.8) combined with locked wheels
+# and high-stiffness legs caused large destabilising lateral forces in practice.
+GROUND_STATIC_FRICTION:  float = 0.6   # rubber on tile (mid-range)
 GROUND_DYNAMIC_FRICTION: float = 0.4   # kinetic (post-slip)
 GROUND_RESTITUTION:      float = 0.0   # no bounce
 
@@ -62,6 +70,12 @@ ANGULAR_DAMPING: float = 0.0
 # =========================================================================== #
 #  Joint friction                                                              #
 # =========================================================================== #
+
+DDSM115_KT: float = 0.75   # Nm/A — DDSM115 torque constant, matches firmware
+
+WHEEL_DRIVE_STIFFNESS: float = 0.0   # pure effort control for wheel joints
+CYBERGEAR_STIFFNESS: float = 30.0    # Nm/rad — default sim kp
+CYBERGEAR_DAMPING: float = 3.0       # Nm*s/rad — default sim kd
 
 # DDSM115 wheel joints — internal motor friction (back-EMF + planetary gear).
 # Measured by spinning the real wheel with no current and fitting a linear
@@ -88,5 +102,5 @@ BATTERY_COM_OFFSET_Y: float =  0.00   # m
 # =========================================================================== #
 #  Solver quality                                                              #
 # =========================================================================== #
-SOLVER_POSITION_ITERS: int = 8
-SOLVER_VELOCITY_ITERS: int = 4
+SOLVER_POSITION_ITERS: int = 4   # was 8 — halves constraint solver cost; revert to 6 if joints show tunnelling
+SOLVER_VELOCITY_ITERS: int = 1   # was 4

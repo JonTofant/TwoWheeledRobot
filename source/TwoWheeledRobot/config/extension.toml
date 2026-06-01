@@ -7,12 +7,12 @@ version = "0.1.0"
 category = "isaaclab"
 readme  = "README.md"
 
-title = "Extension Template"
-author = "Isaac Lab Project Developers"
-maintainer = "Isaac Lab Project Developers"
-description="Extension Template for Isaac Lab"
-repository = "https://github.com/isaac-sim/IsaacLab.git"
-keywords = ["extension", "template", "isaaclab"]
+title = "TwoWheeledRobot"
+author = "TwoWheeledRobot contributors"
+maintainer = "TwoWheeledRobot contributors"
+description = "Isaac Lab stand-up training task for a custom two-wheeled robot"
+repository = ""
+keywords = ["isaaclab", "robotics", "reinforcement-learning", "standup"]
 
 [dependencies]
 "isaaclab" = {}
