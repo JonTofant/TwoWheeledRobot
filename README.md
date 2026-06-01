@@ -91,11 +91,10 @@ Run the deterministic LQR-style controller without loading RSL-RL:
 ```bash
 python scripts/lqr_control.py \
   --task Template-Twowheeledrobot-Standup-v0 \
-  --num_envs 1 \
-  --num_steps 1000
+  --num_envs 1
 ```
 
-The LQR script launches Isaac Sim with the same Hydra task-config pattern as the RL play script, keeps the four CyberGear action channels at a neutral retracted stance (`--cg-neutral-action -1.0`), and computes the left/right wheel current commands from projected gravity, body angular velocity, and wheel velocity feedback. Tune the controller with flags such as `--k-pitch`, `--k-pitch-rate`, `--k-wheel-vel`, `--k-roll`, and `--k-roll-rate`.
+The LQR script launches Isaac Sim with the same Hydra task-config pattern as the RL play script, runs until Isaac Sim closes or you press Ctrl+C, keeps the four CyberGear action channels at a neutral retracted stance (`--cg-neutral-action -1.0`), and computes the left/right wheel current commands from projected gravity, body angular velocity, and wheel velocity feedback. Tune the controller with flags such as `--k-pitch`, `--k-pitch-rate`, `--k-wheel-vel`, `--k-roll`, and `--k-roll-rate`.
 
 Outputs are written under `logs/rsl_rl/standup_two_wheel/`.
 

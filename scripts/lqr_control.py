@@ -17,6 +17,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+_EXTENSION_SOURCE_PATH = Path(__file__).resolve().parents[1] / "source" / "TwoWheeledRobot"
+if _EXTENSION_SOURCE_PATH.is_dir():
+    sys.path.insert(0, str(_EXTENSION_SOURCE_PATH))
 
 from isaaclab.app import AppLauncher
 
@@ -29,7 +34,6 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--num_steps", type=int, default=0, help="Stop after this many steps (0 = run forever).")
 parser.add_argument("--k-pitch", type=float, default=2.0, help="Pitch error feedback gain.")
 parser.add_argument("--k-pitch-rate", type=float, default=0.35, help="Pitch angular-rate feedback gain.")
 parser.add_argument("--k-wheel-vel", type=float, default=0.08, help="Wheel velocity damping feedback gain.")
@@ -180,9 +184,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
                 f"wheel_action=[{wheel_action[0]:+.3f}, {wheel_action[1]:+.3f}]"
             )
 
-        if args_cli.num_steps > 0 and timestep >= args_cli.num_steps:
-            print(f"[INFO]: Reached {args_cli.num_steps} steps — stopping.")
-            break
 
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
