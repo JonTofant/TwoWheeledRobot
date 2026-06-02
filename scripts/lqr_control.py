@@ -30,25 +30,27 @@ parser = argparse.ArgumentParser(description="Run a deterministic LQR-style cont
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--num_envs",
+    type=int,
+    default=1,
+    help="Accepted for compatibility; the LQR controller always runs one environment.",
+)
+parser.add_argument(
+    "--task",
+    type=str,
+    default="Template-Twowheeledrobot-Standup-v0",
+    help="Name of the task.",
+)
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--k-pitch", type=float, default=2.0, help="Pitch error feedback gain.")
-parser.add_argument("--k-pitch-rate", type=float, default=0.35, help="Pitch angular-rate feedback gain.")
-parser.add_argument("--k-wheel-vel", type=float, default=0.08, help="Wheel velocity damping feedback gain.")
-parser.add_argument("--k-roll", type=float, default=0.0, help="Optional differential roll feedback gain.")
-parser.add_argument("--k-roll-rate", type=float, default=0.0, help="Optional differential roll-rate feedback gain.")
-parser.add_argument(
-    "--cg-neutral-action",
-    type=float,
-    default=-1.0,
-    help="Neutral CyberGear action for channels [0:4]; -1 maps to mechanical zero/retracted.",
-)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+
+args_cli.headless = False
+args_cli.num_envs = 1
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -109,44 +111,70 @@ def _compute_lqr_actions(env_unwrapped: Any) -> torch.Tensor:
     projected_gravity_b = env_unwrapped.bno080.data.projected_gravity_b
     ang_vel_b = env_unwrapped.bno080.data.ang_vel_b
     wheel_vel = env_unwrapped.robot.data.joint_vel[:, env_unwrapped._wheel_ids]
-    cg_pos = env_unwrapped.robot.data.joint_pos[:, env_unwrapped._cg_ids]
 
-    # Simple balance state: gravity projection approximates small roll/pitch
-    # error around the upright pose, angular velocity damps body motion,
-    # CyberGear positions keep the measured leg state available for tuning, and
-    # wheel velocity feedback discourages runaway wheel spin.
-    balance_state = torch.cat(
-        (
-            projected_gravity_b[:, 0:2],
-            ang_vel_b[:, 0:2],
-            cg_pos,
-            wheel_vel,
-        ),
-        dim=1,
+    # ---------------------------------------------------------------------
+    # USER CONTROLLER SECTION
+    # ---------------------------------------------------------------------
+    # This block is intentionally written like a small C control loop.
+    # Change signs, gains, and the u calculation here. Everything below this
+    # block only translates your wheel currents into the Isaac Lab action.
+
+    # 1) Raw states from the simulator. These are scalar tensors for env_0.
+    raw_roll = projected_gravity_b[0, 0]
+    raw_pitch = projected_gravity_b[0, 1]
+    raw_roll_rate = ang_vel_b[0, 0]
+    raw_pitch_rate = ang_vel_b[0, 1]
+    raw_left_wheel_velocity = wheel_vel[0, 0]
+    raw_right_wheel_velocity = wheel_vel[0, 1]
+
+    # 2) State sign transforms. Flip any value between +1.0 and -1.0 here.
+    roll = +1.0 * raw_roll
+    pitch = +1.0 * raw_pitch
+    roll_rate = +1.0 * raw_roll_rate
+    pitch_rate = +1.0 * raw_pitch_rate
+    left_wheel_velocity = +1.0 * raw_left_wheel_velocity
+    right_wheel_velocity = +1.0 * raw_right_wheel_velocity
+    wheel_velocity = 0.5 * (left_wheel_velocity + right_wheel_velocity)
+
+    # 3) Gains. Edit these numbers directly while tuning.
+    K_PITCH = 2.0
+    K_PITCH_RATE = 0.35
+    K_WHEEL_VELOCITY = 0.08
+    K_ROLL = 0.0
+    K_ROLL_RATE = 0.0
+
+    # 4) Controller calculation. Put your LQR / PID equation here.
+    u_forward = -(
+        K_PITCH * pitch
+        + K_PITCH_RATE * pitch_rate
+        + K_WHEEL_VELOCITY * wheel_velocity
     )
-    roll_error = balance_state[:, 0]
-    pitch_error = balance_state[:, 1]
-    roll_rate = balance_state[:, 2]
-    pitch_rate = balance_state[:, 3]
-    left_wheel_vel = balance_state[:, 8]
-    right_wheel_vel = balance_state[:, 9]
-    mean_wheel_vel = 0.5 * (left_wheel_vel + right_wheel_vel)
+    u_turn = -(K_ROLL * roll + K_ROLL_RATE * roll_rate)
 
-    forward_current = -(
-        args_cli.k_pitch * pitch_error
-        + args_cli.k_pitch_rate * pitch_rate
-        + args_cli.k_wheel_vel * mean_wheel_vel
-    )
-    turn_current = -(args_cli.k_roll * roll_error + args_cli.k_roll_rate * roll_rate)
+    # 5) Translate controller output to left/right wheel current commands.
+    # If both wheels move backward when they should move forward, flip both
+    # WHEEL_ACTION_SIGN values. If turning is reversed, flip the sign of u_turn.
+    LEFT_WHEEL_ACTION_SIGN = +1.0
+    RIGHT_WHEEL_ACTION_SIGN = +1.0
 
-    left_current = (forward_current - turn_current).clamp(-1.0, 1.0)
-    right_current = (forward_current + turn_current).clamp(-1.0, 1.0)
+    left_current = LEFT_WHEEL_ACTION_SIGN * (u_forward - u_turn)
+    right_current = RIGHT_WHEEL_ACTION_SIGN * (u_forward + u_turn)
+    # ---------------------------------------------------------------------
+    # END USER CONTROLLER SECTION
+    # ---------------------------------------------------------------------
 
-    cg_actions = torch.full(
-        (env_unwrapped.num_envs, 4),
-        args_cli.cg_neutral_action,
-        device=env_unwrapped.device,
-        dtype=torch.float32,
+    left_current = left_current.clamp(-1.0, 1.0).reshape(1)
+    right_current = right_current.clamp(-1.0, 1.0).reshape(1)
+
+    # The CyberGear joints use asymmetric mechanical limits, so a single
+    # normalized action value does not correspond to 0 rad on every joint.
+    # Convert the zero-angle target directly into the normalized action space
+    # used by StandupEnv so the legs are commanded to stay at 0 rad.
+    cg_zero_targets = torch.zeros_like(env_unwrapped._cg_joint_lo)
+    cg_actions = (
+        2.0 * (cg_zero_targets - env_unwrapped._cg_joint_lo)
+        / (env_unwrapped._cg_joint_hi - env_unwrapped._cg_joint_lo)
+        - 1.0
     ).clamp(-1.0, 1.0)
     wheel_actions = torch.stack((left_current, right_current), dim=1)
     return torch.cat((cg_actions, wheel_actions), dim=1)
@@ -155,7 +183,7 @@ def _compute_lqr_actions(env_unwrapped: Any) -> torch.Tensor:
 @hydra_task_config(args_cli.task, None)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _agent_cfg: Any | None):
     """Run the deterministic balance controller."""
-    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    env_cfg.scene.num_envs = 1
     env_cfg.seed = args_cli.seed if args_cli.seed is not None else env_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
