@@ -16,7 +16,7 @@ Observations:
 0..2    projected gravity in body frame
 3..5    body angular velocity / 10 rad/s
 6..9    CyberGear joint extension fraction
-10..11  DDSM115 wheel velocity / 15.7 rad/s
+10..11  DDSM115 wheel velocity / 20.94 rad/s
 12..17  previous action
 ```
 
@@ -42,7 +42,7 @@ Actions:
 5     right DDSM115 current command
 ```
 
-The simulation maps wheel actions to current with `wheel_current_max` from `standup_env_cfg.py` and then torque with `DDSM115_KT` from `sim_params.py`. The PhysX actuator hard limit remains 2.0 Nm, but the policy command envelope is lower: 1.6 Nm, or about 2.13 A at 0.75 Nm/A.
+The simulation maps wheel actions to current with `wheel_current_max` from `standup_env_cfg.py` and then torque with `DDSM115_KT` from `sim_params.py`. The conservative policy envelope is `0.96 Nm`, or `1.28 A` at `0.75 Nm/A`. The motor model clamps current to `2.7 A`, peak torque to `2.0 Nm`, and reduces available torque linearly to zero at the `200 rpm` no-load speed.
 
 ## Sign Convention
 

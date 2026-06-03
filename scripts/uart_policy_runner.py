@@ -42,9 +42,9 @@ CG_JOINT_LO = torch.tensor([-LO_EXT, -LIM, -LIM, -LO_EXT], dtype=torch.float32)
 CG_JOINT_HI = torch.tensor([LIM, LO_EXT, LO_EXT, LIM], dtype=torch.float32)
 CG_EXT_SIGN = torch.tensor([1.0, -1.0, -1.0, 1.0], dtype=torch.float32)
 CG_NORM_SPAN = LO_EXT + LIM
-WHEEL_TORQUE_COMMAND_LIMIT_NM = 1.6
+WHEEL_TORQUE_COMMAND_LIMIT_NM = 0.96
 WHEEL_CURRENT_MAX_A = WHEEL_TORQUE_COMMAND_LIMIT_NM / DDSM115_KT
-WHEEL_VELOCITY_NORM = 15.7
+WHEEL_VELOCITY_NORM = 200.0 * 2.0 * math.pi / 60.0
 
 
 @dataclass

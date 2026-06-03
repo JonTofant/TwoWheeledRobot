@@ -10,7 +10,7 @@ Observation (18 dims) — all manually normalised to [-1, 1], no running stats:
     [0–2]   projected_gravity_b (3D)    full gravity vector in body frame
     [3–5]   ang_vel_b / 10.0           body angular velocities / 10 rad/s
     [6–9]   CyberGear position         zero-centred extension fraction
-    [10–11] DDSM115 wheel velocity      left/right wheel velocity / 15.7 rad/s
+    [10–11] DDSM115 wheel velocity      left/right wheel velocity / no-load speed
     [12–17] prev_actions (6D)           leg + wheel actions from last step
 
 Action (6 dims):
@@ -36,12 +36,18 @@ import math
 
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ImuCfg
+from isaaclab.sensors import ContactSensorCfg, ImuCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
 from .robot_cfg import TWO_WHEELED_ROBOT_CFG
-from .sim_params import PHYSICS_DT, CONTROL_DECIMATION, DDSM115_KT
+from .sim_params import (
+    CONTROL_DECIMATION,
+    DDSM115_KT,
+    DDSM115_NO_LOAD_SPEED,
+    DDSM115_TAU_RATED,
+    PHYSICS_DT,
+)
 
 
 @configclass
@@ -76,6 +82,19 @@ class StandupEnvCfg(DirectRLEnvCfg):
             "/Platform_Group/BNO080"
         ),
         visualizer_cfg=None,
+    )
+
+    enable_wheel_contacts: bool = False
+    wheel_contacts: ContactSensorCfg = ContactSensorCfg(
+        prim_path=(
+            "/World/envs/env_.*/Robot"
+            "/SimplifiedBipedMainAssembly"
+            "/SimplifiedBipedMainAssembly"
+            "/DDSM115_Simplified.*"
+        ),
+        update_period=0.0,
+        history_length=1,
+        debug_vis=False,
     )
 
     # ── Fallen spawn configuration ────────────────────────────────────────────
@@ -113,11 +132,11 @@ class StandupEnvCfg(DirectRLEnvCfg):
     success_steps_required: int    = 2      # consecutive steps ≈ 40 ms at 50 Hz
 
     # ── Action parameterisation ───────────────────────────────────────────────
-    # Absolute PhysX wheel actuator limit is 2.0 Nm in robot_cfg.py.  Command a
-    # lower torque envelope for hardware margin: 1.6 Nm / 0.75 Nm/A = 2.13 A.
-    wheel_torque_command_limit: float = 1.6
+    # Use rated torque for conservative training. The environment still models
+    # the 2.0 Nm short-term peak and the torque-speed envelope.
+    wheel_torque_command_limit: float = DDSM115_TAU_RATED
     wheel_current_max: float = wheel_torque_command_limit / DDSM115_KT
-    wheel_velocity_norm: float = 15.7   # rad/s — DDSM115 no-load velocity used for observation scaling
+    wheel_velocity_norm: float = DDSM115_NO_LOAD_SPEED
 
     # Standup is a high-impulse maneuver, so use fixed strong CyberGear gains
     # instead of reset-time randomisation.  This makes the legs reliably push
@@ -160,7 +179,6 @@ class StandupEnvCfg(DirectRLEnvCfg):
     rew_timeout_penalty: float = -0.03
 
     # ── Domain randomisation ──────────────────────────────────────────────────
-    mass_scale_range:          tuple = (0.80, 1.20)   # ±20 % total mass
     cg_kp_scale_range:         tuple = (1.00, 1.00)   # unused when cg_use_fixed_gains=True
     cg_kd_scale_range:         tuple = (1.00, 1.00)   # unused when cg_use_fixed_gains=True
     wheel_damping_scale_range: tuple = (0.50, 1.50)   # ±50 % wheel friction

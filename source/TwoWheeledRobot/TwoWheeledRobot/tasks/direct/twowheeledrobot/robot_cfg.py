@@ -18,6 +18,8 @@ from .sim_params import (
     BEARING_DAMPING,
     CYBERGEAR_DAMPING,
     CYBERGEAR_STIFFNESS,
+    DDSM115_NO_LOAD_SPEED,
+    DDSM115_TAU_PEAK,
     LINEAR_DAMPING,
     SOLVER_POSITION_ITERS,
     SOLVER_VELOCITY_ITERS,
@@ -36,11 +38,6 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=_USD_PATH,
         activate_contact_sensors=False,
-        # USD PhysicsMassAPI tokens exist but mass VALUES are broken (zero or unit-mismatch
-        # from OnShape export). Override uniformly: 4.5 kg / 11 bodies ≈ 0.41 kg each.
-        # The per-body breakdown isn't exact but the total mass is correct, which is what
-        # matters for wheel-contact dynamics.
-        mass_props=sim_utils.MassPropertiesCfg(mass=0.41),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
@@ -69,17 +66,15 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
         # Wheel drive joints — current-controlled (DDSM115).                 #
         #   Kt  = 0.75 Nm/A                                                  #
         #   Absolute measured peak at wheel: 2 Nm                             #
-        #   Policy commands are scaled lower in standup_env_cfg.py for margin.#
-        #   Rated continuous: 0.96 Nm                                        #
-        #   Deadzone: ±0.04 A × 0.75 = ±0.03 Nm (applied in control.py)    #
-        #   Internal friction: back-EMF + gear train  (WHEEL_INTERNAL_DAMPING)#
+        #   Rated continuous training envelope: 0.96 Nm                       #
+        #   Torque-speed saturation is applied in StandupEnv.                 #
         # ------------------------------------------------------------------ #
         "wheel_joints": ImplicitActuatorCfg(
             joint_names_expr=["DDSM115_Levi", "DDSM115_Desni"],
-            effort_limit_sim=2.0,          # Nm — absolute measured peak
-            velocity_limit=15.7,           # rad/s — ~150 RPM no-load at 24 V
+            effort_limit_sim=DDSM115_TAU_PEAK,
+            velocity_limit_sim=DDSM115_NO_LOAD_SPEED,
             stiffness=WHEEL_DRIVE_STIFFNESS,
-            damping=WHEEL_INTERNAL_DAMPING,  # 0.05 Nm·s/rad — back-EMF + gear friction
+            damping=WHEEL_INTERNAL_DAMPING,
         ),
         # ------------------------------------------------------------------ #
         # CyberGear leg motors — MIT control (PD + torque feedforward).      #

@@ -28,15 +28,16 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 import isaaclab.utils.math as math_utils
-from isaaclab.sensors import Imu
+from isaaclab.sensors import ContactSensor, Imu
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
 
 from .standup_env_cfg import StandupEnvCfg
 from .sim_params import (
-    BATTERY_COM_OFFSET_X,
-    BATTERY_COM_OFFSET_Y,
+    DDSM115_I_PEAK,
     DDSM115_KT,
+    DDSM115_NO_LOAD_SPEED,
+    DDSM115_TAU_PEAK,
     GROUND_DYNAMIC_FRICTION,
     GROUND_RESTITUTION,
     GROUND_STATIC_FRICTION,
@@ -100,6 +101,11 @@ class StandupEnv(DirectRLEnv):
 
         # ── Pre-allocated hot-path buffers ────────────────────────────────────
         self._efforts_buf = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_i_des = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_i_cmd = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_tau_current = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_tau_speed_limit = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_torque_cmd = torch.zeros(self.num_envs, 2, device=self.device)
         self._zero_rew    = torch.zeros(self.num_envs,    device=self.device)
 
         # ── Standup-specific state buffers ────────────────────────────────────
@@ -122,7 +128,6 @@ class StandupEnv(DirectRLEnv):
         )
 
         # ── Domain randomisation baselines ────────────────────────────────────
-        self._default_masses          = self.robot.data.default_mass.cpu().clone()
         self._default_joint_stiffness = self.robot.data.default_joint_stiffness.cpu().clone()
         self._default_joint_damping   = self.robot.data.default_joint_damping.cpu().clone()
 
@@ -203,6 +208,10 @@ class StandupEnv(DirectRLEnv):
         self.bno080 = Imu(self.cfg.bno080)
         self.scene.sensors["bno080"] = self.bno080
 
+        if self.cfg.enable_wheel_contacts:
+            self.wheel_contacts = ContactSensor(self.cfg.wheel_contacts)
+            self.scene.sensors["wheel_contacts"] = self.wheel_contacts
+
         # Flat ground only — no terrain variation for the standup task.
         spawn_ground_plane(
             prim_path="/World/ground",
@@ -223,27 +232,6 @@ class StandupEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
-        # Battery CoM offset — matches the physical robot layout.
-        if BATTERY_COM_OFFSET_X != 0.0 or BATTERY_COM_OFFSET_Y != 0.0:
-            try:
-                import omni.usd
-                from pxr import Gf, UsdPhysics
-                stage = omni.usd.get_context().get_stage()
-                platform_path = (
-                    "/World/envs/env_0/Robot"
-                    "/SimplifiedBipedMainAssembly"
-                    "/SimplifiedBipedMainAssembly/Platform_Group"
-                )
-                prim = stage.GetPrimAtPath(platform_path)
-                if prim and prim.IsValid():
-                    if not prim.HasAPI(UsdPhysics.MassAPI):
-                        UsdPhysics.MassAPI.Apply(prim)
-                    UsdPhysics.MassAPI(prim).GetCenterOfMassAttr().Set(
-                        Gf.Vec3f(BATTERY_COM_OFFSET_X, BATTERY_COM_OFFSET_Y, 0.0)
-                    )
-            except Exception:
-                pass
-
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
         light_cfg.func("/World/Light", light_cfg)
 
@@ -263,12 +251,24 @@ class StandupEnv(DirectRLEnv):
         cg_targets = self._cg_joint_lo + act01 * (self._cg_joint_hi - self._cg_joint_lo)
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
-        # ── Wheel torque targets ───────────────────────────────────────────────
-        # Left wheel USD mesh is mirrored → negate left torque (same as control.py).
-        I_left  = actions[:, 4] * self.cfg.wheel_current_max
-        I_right = actions[:, 5] * self.cfg.wheel_current_max
-        self._efforts_buf[:, 0] = -I_left  * DDSM115_KT
-        self._efforts_buf[:, 1] =  I_right * DDSM115_KT
+        # ── DDSM115 current/torque motor model ────────────────────────────────
+        # Policy actions request current. Convert to torque, then apply the
+        # short-term peak and linear torque-speed envelope. Positive values are
+        # forward-positive here; only the final left effort is negated because
+        # the left wheel joint axis is mirrored in the USD.
+        self._wheel_i_des = actions[:, 4:6] * self.cfg.wheel_current_max
+        self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
+        self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
+        wheel_omega = self.robot.data.joint_vel[:, self._wheel_ids]
+        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - wheel_omega.abs() / DDSM115_NO_LOAD_SPEED)
+        self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
+        self._wheel_torque_cmd = torch.maximum(
+            -self._wheel_tau_speed_limit,
+            torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
+        )
+
+        self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
+        self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
         self.robot.set_joint_effort_target(self._efforts_buf, joint_ids=self._wheel_ids)
 
     def _apply_action(self) -> None:
@@ -475,6 +475,11 @@ class StandupEnv(DirectRLEnv):
         # ── Reset per-env buffers ─────────────────────────────────────────────
         self._prev_actions[env_ids]       = 0.0
         self._cur_actions[env_ids]        = 0.0
+        self._wheel_i_des[env_ids]        = 0.0
+        self._wheel_i_cmd[env_ids]        = 0.0
+        self._wheel_tau_current[env_ids]  = 0.0
+        self._wheel_tau_speed_limit[env_ids] = 0.0
+        self._wheel_torque_cmd[env_ids]   = 0.0
         self._success_counter[ids_t]      = 0
         self._success_bonus_paid[ids_t]   = False
 
@@ -515,14 +520,7 @@ class StandupEnv(DirectRLEnv):
                     self._cg_bl_ids[0], self._cg_br_ids[0]]
         wheel_cols = [self._left_wheel_ids[0], self._right_wheel_ids[0]]
 
-        # 1. Body mass ±20 %
-        lo_m, hi_m = self.cfg.mass_scale_range
-        mass_scale = torch.empty(n, 1).uniform_(lo_m, hi_m)
-        all_masses = self.robot.root_physx_view.get_masses()
-        all_masses[env_ids_cpu] = self._default_masses[env_ids_cpu] * mass_scale
-        self.robot.root_physx_view.set_masses(all_masses, env_ids_cpu)
-
-        # 2. CyberGear stiffness / damping
+        # CyberGear stiffness / damping
         if self.cfg.cg_use_fixed_gains:
             joint_stiffness = self._default_joint_stiffness[env_ids_cpu].clone()
             joint_damping = self._default_joint_damping[env_ids_cpu].clone()
@@ -553,7 +551,7 @@ class StandupEnv(DirectRLEnv):
                 env_ids=env_ids_cpu,
             )
 
-        # 4. Wheel rotational friction ±50 %
+        # Wheel rotational friction ±50 %
         lo_wd, hi_wd = self.cfg.wheel_damping_scale_range
         fric_default = torch.zeros(n, n_joints)
         fric_default[:, wheel_cols] = WHEEL_INTERNAL_DAMPING

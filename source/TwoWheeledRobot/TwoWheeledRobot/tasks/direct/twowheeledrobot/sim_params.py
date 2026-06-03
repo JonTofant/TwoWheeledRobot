@@ -20,13 +20,12 @@ Ground
 
 Robot body
 ----------
-  ROBOT_MASS_OFFSET_KG     — add/subtract kg from every rigid body (0 = perfect)
   LINEAR_DAMPING           — linear  velocity damping on all links
   ANGULAR_DAMPING          — angular velocity damping on all links
 
 Actuators
 ---------
-  DDSM115_KT               — wheel torque constant (Nm/A)
+  DDSM115_*                 — DDSM115 current/torque/speed motor model
   WHEEL_DRIVE_STIFFNESS    — PhysX stiffness for effort-controlled wheel joints
   CYBERGEAR_STIFFNESS      — default CyberGear position gain in simulation
   CYBERGEAR_DAMPING        — default CyberGear damping gain in simulation
@@ -36,6 +35,8 @@ Solver
   SOLVER_POSITION_ITERS    — PhysX position solver iterations (higher = stiffer)
   SOLVER_VELOCITY_ITERS    — PhysX velocity solver iterations
 """
+
+import math
 
 # =========================================================================== #
 #  Timing                                                                      #
@@ -60,9 +61,6 @@ GROUND_RESTITUTION:      float = 0.0   # no bounce
 #  Robot body imperfections                                                    #
 # =========================================================================== #
 
-# Extra mass added to every rigid body (kg).
-ROBOT_MASS_OFFSET_KG: float = 0.0
-
 # Passive link-body velocity damping (air drag, structural flex).
 LINEAR_DAMPING:  float = 0.0
 ANGULAR_DAMPING: float = 0.0
@@ -71,33 +69,30 @@ ANGULAR_DAMPING: float = 0.0
 #  Joint friction                                                              #
 # =========================================================================== #
 
-DDSM115_KT: float = 0.75   # Nm/A — DDSM115 torque constant, matches firmware
+# DDSM115 integrated PMSM hub servo. The useful simulation abstraction is a
+# current/torque-controlled direct-drive motor, not a position servo.
+DDSM115_KT: float = 0.75                         # Nm/A
+DDSM115_I_CONT: float = 1.5                      # A, continuous current
+DDSM115_I_PEAK: float = 2.7                      # A, short-term command clamp
+DDSM115_TAU_RATED: float = 0.96                  # Nm, conservative training limit
+DDSM115_TAU_PEAK: float = 2.0                    # Nm, stall/short-term peak
+DDSM115_RATED_SPEED: float = 115.0 * 2.0 * math.pi / 60.0  # rad/s
+DDSM115_NO_LOAD_SPEED: float = 200.0 * 2.0 * math.pi / 60.0  # rad/s
 
 WHEEL_DRIVE_STIFFNESS: float = 0.0   # pure effort control for wheel joints
 CYBERGEAR_STIFFNESS: float = 30.0    # Nm/rad — default sim kp
 CYBERGEAR_DAMPING: float = 3.0       # Nm*s/rad — default sim kd
 
-# DDSM115 wheel joints — internal motor friction (back-EMF + planetary gear).
-# Measured by spinning the real wheel with no current and fitting a linear
-# drag model.  0.05 Nm·s/rad gives ~0.5 Nm drag at 10 rad/s which is
-# consistent with the DDSM115 datasheet efficiency figures.
-WHEEL_INTERNAL_DAMPING: float = 0.05   # Nm·s/rad
+# The torque-speed curve already includes the losses that define no-load speed.
+# Additional wheel damping would double-count those losses and make a free wheel
+# settle below the documented 200 rpm endpoint.
+WHEEL_INTERNAL_DAMPING: float = 0.0   # Nm·s/rad
 
 # Passive revolute joints (leg parallelogram bearings).
 # Rolling-element bearings have very low but non-zero viscous friction.
 # 0.005 Nm·s/rad corresponds to ~0.05 Nm at 10 rad/s — reasonable for
 # a small deep-groove ball bearing.
 BEARING_DAMPING: float = 0.005   # Nm·s/rad
-
-# =========================================================================== #
-#  Battery CoM offset                                                          #
-# =========================================================================== #
-# The LiPo battery sits slightly off the geometric centre of Platform_Group.
-# Applied to the Platform_Group USD prim after scene load (see env __init__).
-# Positive X = toward robot front, positive Y = toward robot left.
-# Set both to 0.0 to disable.
-BATTERY_COM_OFFSET_X: float =  0.02   # m  (2 cm forward — tune to real layout)
-BATTERY_COM_OFFSET_Y: float =  0.00   # m
 
 # =========================================================================== #
 #  Solver quality                                                              #

@@ -44,7 +44,7 @@ Observation space: 18 values, manually normalized for firmware parity.
 [0:3]   projected_gravity_b
 [3:6]   body angular velocity / 10 rad/s
 [6:10]  CyberGear joint extension fractions
-[10:12] DDSM115 wheel velocities / 15.7 rad/s
+[10:12] DDSM115 wheel velocities / 20.94 rad/s
 [12:18] previous action
 ```
 
@@ -66,7 +66,13 @@ Action space: 6 values in `[-1, 1]`.
 
 The left wheel torque is negated in simulation because the USD wheel is mirrored. Keep that sign convention aligned with firmware.
 
-The wheel actuator hard limit in simulation is 2.0 Nm, matching the measured DDSM115 peak. The policy command scaling is intentionally lower: `wheel_torque_command_limit = 1.6 Nm`, or about `2.13 A` with `Kt = 0.75 Nm/A`, so retraining keeps a safety margin for the real robot.
+The DDSM115 wheels are modeled as current/torque-controlled direct-drive actuators, never as position servos. Wheel joint stiffness and extra passive motor damping are zero, the PhysX peak limit is `2.0 Nm`, and the velocity limit is the documented `200 rpm` no-load speed (`20.94 rad/s`). The torque-speed curve already includes the losses that define no-load speed, so adding motor damping would double-count them.
+
+For conservative training, policy action `+/-1` maps to the rated torque envelope of `+/-0.96 Nm`, or `+/-1.28 A` with `Kt = 0.75 Nm/A`. The environment additionally clamps current to `2.7 A`, torque to `2.0 Nm`, and applies a linear torque-speed envelope that reaches zero torque at `200 rpm`.
+
+Useful validation points are: a free wheel should approach `200 rpm`, `1.5 A` should produce approximately `0.96-1.125 Nm`, and low-speed peak torque should never exceed `2.0 Nm`.
+
+The Waveshare interface also exposes current, velocity, position, mode, and error-code feedback at communication rates up to `500 Hz`. Its raw command ranges are `-8 A` to `+8 A` for current mode, `-330 rpm` to `+330 rpm` for speed mode, and `0 deg` to `360 deg` for position mode. This Isaac Lab task intentionally uses only current/torque mode. Bus overcurrent, phase-current, overtemperature, and five-second locked-rotor protection are not yet modeled as stateful faults.
 
 ## Running
 
@@ -86,15 +92,37 @@ python scripts/rsl_rl/play.py \
   --num_envs 1
 ```
 
-Run the deterministic LQR-style controller without loading RSL-RL:
+Run the fixed-base DDSM115 current-driven free-spin test without loading RSL-RL:
 
 ```bash
 python scripts/lqr_control.py \
   --task Template-Twowheeledrobot-Standup-v0 \
-  --num_envs 1
+  --motor-test-current 0.25
 ```
 
-The LQR script launches Isaac Sim with the same Hydra task-config pattern as the RL play script, runs until Isaac Sim closes or you press Ctrl+C, keeps the four CyberGear action channels at a neutral retracted stance (`--cg-neutral-action -1.0`), and computes the left/right wheel current commands from projected gravity, body angular velocity, and wheel velocity feedback. Tune the controller with flags such as `--k-pitch`, `--k-pitch-rate`, `--k-wheel-vel`, `--k-roll`, and `--k-roll-rate`.
+The default `free-spin` mode suspends the robot by fixing its base above the ground, exposes a physical-units `RobotState` to `compute_action()`, and converts the returned physical-units `RobotAction` current command into the environment action. Try `--motor-test-current 0.25`, `1.0`, `1.5`, or `2.7`. Use `--left-motor-test-current` and `--right-motor-test-current` for separate commands.
+
+Run the analytical LQR sign and DDSM115 motor-model diagnostic while the robot remains suspended:
+
+```bash
+python scripts/lqr_control.py \
+  --task Template-Twowheeledrobot-Standup-v0 \
+  --test-mode lqr-model \
+  --artificial-pitch-deg 1.0
+```
+
+This mode prints the analytical `A`, `B`, and `K` matrices, checks that `+1` and `-1` degree pitch produce opposite current commands, and passes the selected artificial pitch command through the shared DDSM115 current/torque model. It is not a balancing test because the wheels have no ground contact.
+
+After suspended-air signs and motor direction are confirmed, the separate floor-contact mode can be started with a small 0.5-3 degree initial pitch:
+
+```bash
+python scripts/lqr_control.py \
+  --task Template-Twowheeledrobot-Standup-v0 \
+  --test-mode lqr-floor \
+  --floor-initial-pitch-deg 1.0
+```
+
+The CSV and live plots include wheel RPM, wheel angular velocity, desired current, saturated current, current-produced torque, torque-speed limit, and actual applied torque. Live plots use matplotlib and work with Docker display forwarding such as `xhost`. Disable them with `--no-plot`, or list every signal and group with `--list-signals`.
 
 Outputs are written under `logs/rsl_rl/standup_two_wheel/`.
 
