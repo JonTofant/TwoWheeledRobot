@@ -28,7 +28,7 @@ parser.add_argument("--num_envs", type=int, default=1, help="Accepted for compat
 parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-Standup-v0")
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--real-time", action="store_true", default=False)
-parser.add_argument("--control-decimation", type=int, default=1, help="Physics steps per action update.")
+parser.add_argument("--control-decimation", type=int, default=20, help="Physics steps per action update.")
 parser.add_argument("--base-height", type=float, default=0.50, help="Fixed base height above ground in meters.")
 parser.add_argument(
     "--test-mode",
@@ -37,6 +37,7 @@ parser.add_argument(
     help="Select constant-current free-spin, suspended LQR model diagnostic, or opt-in floor-contact LQR test.",
 )
 parser.add_argument("--motor-test-current", type=float, default=0.25, help="Desired current for both free-spinning wheels in A.")
+parser.add_argument("--free-spin-test-time-s", type=float, default=0.0, help="Stop free-spin mode after this simulated duration; zero runs until interrupted.")
 parser.add_argument("--left-motor-test-current", type=float, default=None, help="Optional left-wheel current override in A.")
 parser.add_argument("--right-motor-test-current", type=float, default=None, help="Optional right-wheel current override in A.")
 parser.add_argument(
@@ -127,7 +128,9 @@ class RobotState:
     time_s: float
     projected_gravity_body: tuple[float, float, float]
     angular_velocity_body_rad_s: tuple[float, float, float]
+    angular_velocity_world_rad_s: tuple[float, float, float]
     root_position_world_m: tuple[float, float, float]
+    root_orientation_world_quat_wxyz: tuple[float, float, float, float]
     root_linear_velocity_world_m_s: tuple[float, float, float]
     cg_joint_position_rad: tuple[float, float, float, float]
     cg_joint_velocity_rad_s: tuple[float, float, float, float]
@@ -193,6 +196,12 @@ def pitch_from_projected_gravity(projected_gravity_body: tuple[float, float, flo
     return math.atan2(gravity_y, -gravity_z)
 
 
+def yaw_from_quat_wxyz(quat_wxyz: tuple[float, float, float, float]) -> float:
+    """Return world-frame yaw from an Isaac Lab wxyz quaternion."""
+    w, x, y, z = quat_wxyz
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
 def lqr_current_for_pitch_deg(pitch_deg: float) -> float:
     """Return the zero-rate, zero-position LQR current command."""
     state = np.array([math.radians(pitch_deg), 0.0, 0.0, 0.0])
@@ -226,7 +235,9 @@ def read_state(env: Any, time_s: float) -> RobotState:
         time_s=time_s,
         projected_gravity_body=_tuple(env.bno080.data.projected_gravity_b[0]),
         angular_velocity_body_rad_s=_tuple(env.bno080.data.ang_vel_b[0]),
+        angular_velocity_world_rad_s=_tuple(data.root_ang_vel_w[0]),
         root_position_world_m=_tuple(data.root_pos_w[0]),
+        root_orientation_world_quat_wxyz=_tuple(data.root_quat_w[0]),
         root_linear_velocity_world_m_s=_tuple(data.root_lin_vel_w[0]),
         cg_joint_position_rad=_tuple(data.joint_pos[0, env._cg_ids]),
         cg_joint_velocity_rad_s=_tuple(data.joint_vel[0, env._cg_ids]),
@@ -252,6 +263,9 @@ def read_motor_debug(env: Any) -> dict[str, tuple[float, float]]:
         "i_des": _tuple(env._wheel_i_des[0]),
         "i_cmd": _tuple(env._wheel_i_cmd[0]),
         "tau_current": _tuple(env._wheel_tau_current[0]),
+        "wheel_velocity_raw": _tuple(env._wheel_velocity_raw[0]),
+        "wheel_velocity_used": _tuple(env._wheel_velocity_used[0]),
+        "omega_for_limiter": _tuple(env._wheel_omega_for_limiter[0]),
         "tau_speed_limit": _tuple(env._wheel_tau_speed_limit[0]),
         "tau_actual": _tuple(env._wheel_torque_cmd[0]),
     }
@@ -269,19 +283,37 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
     theta_dot = -state.angular_velocity_body_rad_s[0]
     position = 0.5 * sum(state.wheel_position_rad) * R_WHEEL
     velocity = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
+    base_yaw = yaw_from_quat_wxyz(state.root_orientation_world_quat_wxyz)
+    base_yaw_rate = state.angular_velocity_world_rad_s[2]
+    left_wheel_rpm = state.wheel_velocity_rad_s[0] * 60.0 / (2.0 * math.pi)
+    right_wheel_rpm = state.wheel_velocity_rad_s[1] * 60.0 / (2.0 * math.pi)
+    rpm_diff = right_wheel_rpm - left_wheel_rpm
+    current_diff = motor["i_cmd"][1] - motor["i_cmd"][0]
+    torque_diff = motor["tau_actual"][1] - motor["tau_actual"][0]
+    contact_force_diff = contact_forces[1] - contact_forces[0]
     return {
         "time": state.time_s,
         "theta": theta,
         "theta_dot": theta_dot,
         "position": position,
         "velocity": velocity,
+        "base_yaw": base_yaw,
+        "base_yaw_rate": base_yaw_rate,
+        "base_position_x": state.root_position_world_m[0],
+        "base_position_y": state.root_position_world_m[1],
+        "base_position_z": state.root_position_world_m[2],
+        "left_wheel_rpm": left_wheel_rpm,
+        "right_wheel_rpm": right_wheel_rpm,
         "i_des_left": motor["i_des"][0], "i_des_right": motor["i_des"][1],
         "i_cmd_left": motor["i_cmd"][0], "i_cmd_right": motor["i_cmd"][1],
         "tau_actual_left": motor["tau_actual"][0], "tau_actual_right": motor["tau_actual"][1],
-        "wheel_rpm_left": state.wheel_velocity_rad_s[0] * 60.0 / (2.0 * math.pi),
-        "wheel_rpm_right": state.wheel_velocity_rad_s[1] * 60.0 / (2.0 * math.pi),
-        "base_position_x": state.root_position_world_m[0],
-        "base_position_z": state.root_position_world_m[2],
+        "left_contact_force": contact_forces[0], "right_contact_force": contact_forces[1],
+        "rpm_diff": rpm_diff,
+        "current_diff": current_diff,
+        "torque_diff": torque_diff,
+        "contact_force_diff": contact_force_diff,
+        "wheel_rpm_left": left_wheel_rpm,
+        "wheel_rpm_right": right_wheel_rpm,
         "contact_force_left": contact_forces[0], "contact_force_right": contact_forces[1],
         "current_saturated_left": float(abs(motor["i_des"][0] - motor["i_cmd"][0]) > 1.0e-6),
         "current_saturated_right": float(abs(motor["i_des"][1] - motor["i_cmd"][1]) > 1.0e-6),
@@ -290,12 +322,14 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
         "right_wheel_position_rad": state.wheel_position_rad[1],
         "left_wheel_velocity_rad_s": state.wheel_velocity_rad_s[0],
         "right_wheel_velocity_rad_s": state.wheel_velocity_rad_s[1],
-        "left_wheel_rpm": state.wheel_velocity_rad_s[0] * 60.0 / (2.0 * math.pi),
-        "right_wheel_rpm": state.wheel_velocity_rad_s[1] * 60.0 / (2.0 * math.pi),
         "raw_left_wheel_velocity_rad_s": state.raw_wheel_velocity_rad_s[0],
         "raw_right_wheel_velocity_rad_s": state.raw_wheel_velocity_rad_s[1],
         "left_i_des_a": motor["i_des"][0], "right_i_des_a": motor["i_des"][1],
         "left_i_cmd_a": motor["i_cmd"][0], "right_i_cmd_a": motor["i_cmd"][1],
+        "left_wheel_velocity_raw_rad_s": motor["wheel_velocity_raw"][0], "right_wheel_velocity_raw_rad_s": motor["wheel_velocity_raw"][1],
+        "left_wheel_velocity_used_rad_s": motor["wheel_velocity_used"][0], "right_wheel_velocity_used_rad_s": motor["wheel_velocity_used"][1],
+        "left_wheel_velocity_used_rpm": motor["wheel_velocity_used"][0] * 60.0 / (2.0 * math.pi), "right_wheel_velocity_used_rpm": motor["wheel_velocity_used"][1] * 60.0 / (2.0 * math.pi),
+        "left_omega_for_limiter_rad_s": motor["omega_for_limiter"][0], "right_omega_for_limiter_rad_s": motor["omega_for_limiter"][1],
         "left_tau_current_nm": motor["tau_current"][0], "right_tau_current_nm": motor["tau_current"][1],
         "left_tau_speed_limit_nm": motor["tau_speed_limit"][0], "right_tau_speed_limit_nm": motor["tau_speed_limit"][1],
         "left_tau_actual_nm": motor["tau_actual"][0], "right_tau_actual_nm": motor["tau_actual"][1],
@@ -309,6 +343,8 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
 
 
 PLOT_SIGNALS: dict[str, tuple[str, str]] = {
+    "theta": ("Pitch angle", "rad"), "theta_dot": ("Pitch rate", "rad/s"),
+    "base_yaw": ("Base yaw", "rad"), "base_yaw_rate": ("Base yaw rate", "rad/s"),
     "left_wheel_velocity_rad_s": ("Left wheel velocity", "rad/s"), "right_wheel_velocity_rad_s": ("Right wheel velocity", "rad/s"),
     "left_wheel_rpm": ("Left wheel speed", "rpm"), "right_wheel_rpm": ("Right wheel speed", "rpm"),
     "left_wheel_position_rad": ("Left wheel position", "rad"), "right_wheel_position_rad": ("Right wheel position", "rad"),
@@ -325,6 +361,8 @@ PLOT_SIGNALS: dict[str, tuple[str, str]] = {
     "angular_velocity_body_z_rad_s": ("Body angular velocity Z", "rad/s"),
 }
 PLOT_GROUPS = {
+    "theta": ("theta", "theta_dot"),
+    "yaw": ("base_yaw", "base_yaw_rate"),
     "wheel_velocity": ("left_wheel_velocity_rad_s", "right_wheel_velocity_rad_s"),
     "wheel_rpm": ("left_wheel_rpm", "right_wheel_rpm"),
     "wheel_position": ("left_wheel_position_rad", "right_wheel_position_rad"),
@@ -546,6 +584,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
                 contact_forces = read_wheel_contact_forces(env.unwrapped) if args_cli.test_mode == "lqr-floor" else (0.0, 0.0)
             timestep += 1
             row = sample_to_row(state, motor, contact_forces); logger.write(row)
+            tau_limit_diff = abs(motor["tau_speed_limit"][0] - motor["tau_speed_limit"][1])
+            if tau_limit_diff > 0.2:
+                print(
+                    "[DDSM115 LIMITER ASYMMETRY] "
+                    f"time={row['time']:.6f} s  "
+                    f"left_omega_for_limiter={motor['omega_for_limiter'][0]:.6f} rad/s  "
+                    f"right_omega_for_limiter={motor['omega_for_limiter'][1]:.6f} rad/s  "
+                    f"left_tau_limit={motor['tau_speed_limit'][0]:.6f} Nm  "
+                    f"right_tau_limit={motor['tau_speed_limit'][1]:.6f} Nm"
+                )
             if timestep == 1 and args_cli.test_mode in ("lqr-model", "lqr-floor"):
                 print(
                     "[DDSM115 MODEL] "
@@ -565,6 +613,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
                     )
             if plotter is not None and timestep % args_cli.plot_every == 0:
                 plotter.update(row)
+            if args_cli.test_mode == "free-spin" and args_cli.free_spin_test_time_s > 0.0 and row["time"] >= args_cli.free_spin_test_time_s:
+                print(f"[STOP]: reached free-spin test time {args_cli.free_spin_test_time_s:.3f} s.")
+                break
             if args_cli.test_mode == "lqr-floor":
                 theta_deg = math.degrees(row["theta"])
                 if abs(theta_deg) >= args_cli.floor_stop_pitch_deg:

@@ -104,6 +104,9 @@ class StandupEnv(DirectRLEnv):
         self._wheel_i_des = torch.zeros(self.num_envs, 2, device=self.device)
         self._wheel_i_cmd = torch.zeros(self.num_envs, 2, device=self.device)
         self._wheel_tau_current = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_velocity_raw = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_velocity_used = torch.zeros(self.num_envs, 2, device=self.device)
+        self._wheel_omega_for_limiter = torch.zeros(self.num_envs, 2, device=self.device)
         self._wheel_tau_speed_limit = torch.zeros(self.num_envs, 2, device=self.device)
         self._wheel_torque_cmd = torch.zeros(self.num_envs, 2, device=self.device)
         self._zero_rew    = torch.zeros(self.num_envs,    device=self.device)
@@ -259,8 +262,10 @@ class StandupEnv(DirectRLEnv):
         self._wheel_i_des = actions[:, 4:6] * self.cfg.wheel_current_max
         self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
-        wheel_omega = self.robot.data.joint_vel[:, self._wheel_ids]
-        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - wheel_omega.abs() / DDSM115_NO_LOAD_SPEED)
+        self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+        self._wheel_velocity_used = self._wheel_velocity_raw.clone()
+        self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
         self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
         self._wheel_torque_cmd = torch.maximum(
             -self._wheel_tau_speed_limit,
@@ -478,6 +483,9 @@ class StandupEnv(DirectRLEnv):
         self._wheel_i_des[env_ids]        = 0.0
         self._wheel_i_cmd[env_ids]        = 0.0
         self._wheel_tau_current[env_ids]  = 0.0
+        self._wheel_velocity_raw[env_ids] = 0.0
+        self._wheel_velocity_used[env_ids] = 0.0
+        self._wheel_omega_for_limiter[env_ids] = 0.0
         self._wheel_tau_speed_limit[env_ids] = 0.0
         self._wheel_torque_cmd[env_ids]   = 0.0
         self._success_counter[ids_t]      = 0

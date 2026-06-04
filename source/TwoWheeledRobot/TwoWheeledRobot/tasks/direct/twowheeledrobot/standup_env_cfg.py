@@ -53,7 +53,7 @@ from .sim_params import (
 @configclass
 class StandupEnvCfg(DirectRLEnvCfg):
     # ── Timing ────────────────────────────────────────────────────────────────
-    decimation: int = CONTROL_DECIMATION      # 4 → 20 ms control step (50 Hz)
+    decimation: int = CONTROL_DECIMATION      # 20 → 20 ms control step (50 Hz)
     episode_length_s: float = 10.0            # 500 steps — generous budget
 
     # ── RL interface ──────────────────────────────────────────────────────────

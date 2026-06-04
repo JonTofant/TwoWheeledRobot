@@ -41,8 +41,8 @@ import math
 # =========================================================================== #
 #  Timing                                                                      #
 # =========================================================================== #
-PHYSICS_DT:           float = 1.0 / 200.0   # s  →  5 ms physics step
-CONTROL_DECIMATION:   int   = 4             # control sample time = 5ms × 4 = 20 ms
+PHYSICS_DT:           float = 1.0 / 1000.0  # s  →  1 ms physics step
+CONTROL_DECIMATION:   int   = 20            # control sample time = 1ms × 20 = 20 ms
 
 # =========================================================================== #
 #  Ground plane                                                                #
