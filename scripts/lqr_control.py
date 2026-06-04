@@ -97,28 +97,137 @@ from TwoWheeledRobot.tasks.direct.twowheeledrobot.sim_params import (
 )
 
 
-M_B = 2.716
-M_W = 0.543
-I_B = 0.01296
-I_W = 0.000423
-L = 0.10698
-R_WHEEL = 0.07049
-G = 9.81
-KT = 0.75
+@dataclass(frozen=True)
+class LqrPhysicalParams:
+    body_mass_kg: float
+    wheel_cart_mass_kg: float
+    wheel_radius_m: float
+    body_com_height_m: float
+    body_pitch_inertia_kg_m2: float
+    wheel_torque_constant_nm_per_a: float
+    no_load_current_a: float = 0.25
+    no_load_speed_rpm: float = 200.0
+    gravity_m_s2: float = 9.81
 
-A_LQR = np.array(
-    [
-        [0.0, 1.0, 0.0, 0.0],
-        [125.106, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-        [-9.153, 0.0, 0.0, 0.0],
-    ]
+    @property
+    def wheel_internal_damping_nm_s_rad(self) -> float:
+        omega_no_load_rad_s = self.no_load_speed_rpm * 2.0 * math.pi / 60.0
+        return self.wheel_torque_constant_nm_per_a * self.no_load_current_a / omega_no_load_rad_s
+
+
+@dataclass(frozen=True)
+class LqrWeights:
+    q_position: float
+    q_wheel_velocity: float
+    q_pitch: float
+    q_pitch_rate: float
+    r_force: float
+
+
+# ---------------------------------------------------------------------------
+# USER LQR TUNING SECTION
+# ---------------------------------------------------------------------------
+# Select "auto_lqr" to calculate current gains from physical parameters, or
+# "manual_current" to use the editable per-wheel current gains below.
+GAIN_MODE = "manual_current"
+
+# Flip this if positive pitch drives the wheels the wrong way. Your current sim
+# sign convention needs -1.0; use +1.0 for the raw LQR/model sign.
+LQR_CURRENT_SIGN = -1.0
+
+# Manual gains are per-wheel current gain magnitudes. State units are:
+# [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s].
+K_WHEEL_POSITION_CURRENT = 0.0
+K_WHEEL_VELOCITY_CURRENT = 0.474502
+K_PITCH_CURRENT = 3.21126
+K_PITCH_RATE_CURRENT = 0.327822
+
+# Equal wheel current cannot create a clean linear roll restoring input in this
+# simple fixed-leg model, so these are exposed for clarity but not used.
+K_ROLL_CURRENT = 0.0
+K_ROLL_RATE_CURRENT = 0.0
+
+# Auto LQR physical parameters. The wheel radius uses the measured 100.7 mm
+# wheel diameter; the extracted sim radius is intentionally not used here.
+LQR_PHYSICAL_PARAMS = LqrPhysicalParams(
+    body_mass_kg=2.6,
+    wheel_cart_mass_kg=1.53,
+    wheel_radius_m=0.05035,
+    body_com_height_m=0.14,
+    body_pitch_inertia_kg_m2=0.0129596588636,
+    wheel_torque_constant_nm_per_a=0.75,
 )
-B_LQR = np.array([[0.0], [-68.323], [0.0], [10.356]])
-Q_LQR = np.diag([300.0, 30.0, 1.0, 5.0])
-R_LQR = np.array([[1.0]])
-P_LQR = solve_continuous_are(A_LQR, B_LQR, Q_LQR, R_LQR)
-K_LQR = np.linalg.inv(R_LQR) @ B_LQR.T @ P_LQR
+LQR_WEIGHTS = LqrWeights(
+    q_position=0.0,
+    q_wheel_velocity=0.15,
+    q_pitch=45.0,
+    q_pitch_rate=2.0,
+    r_force=1.0,
+)
+# ---------------------------------------------------------------------------
+# END USER LQR TUNING SECTION
+# ---------------------------------------------------------------------------
+
+R_WHEEL = LQR_PHYSICAL_PARAMS.wheel_radius_m
+
+
+def build_pitch_model(params: LqrPhysicalParams) -> tuple[np.ndarray, np.ndarray]:
+    """Return A, B for state [position, velocity, pitch, pitch_rate]."""
+    m = params.body_mass_kg
+    m_cart = params.wheel_cart_mass_kg
+    l = params.body_com_height_m
+    inertia = params.body_pitch_inertia_kg_m2
+    g = params.gravity_m_s2
+    b = 2.0 * params.wheel_internal_damping_nm_s_rad / (params.wheel_radius_m**2)
+
+    denominator = inertia * (m_cart + m) + m_cart * m * l**2
+    a22 = -((inertia + m * l**2) * b) / denominator
+    a23 = (m**2 * g * l**2) / denominator
+    a42 = -(m * l * b) / denominator
+    a43 = (m * g * l * (m_cart + m)) / denominator
+    b2 = (inertia + m * l**2) / denominator
+    b4 = (m * l) / denominator
+
+    a = np.array(
+        [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, a22, a23, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, a42, a43, 0.0],
+        ],
+        dtype=float,
+    )
+    b_mat = np.array([[0.0], [b2], [0.0], [b4]], dtype=float)
+    return a, b_mat
+
+
+def calculate_lqr_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return A, B, force gains, and per-wheel current gains."""
+    a, b = build_pitch_model(params)
+    q = np.diag([weights.q_position, weights.q_wheel_velocity, weights.q_pitch, weights.q_pitch_rate])
+    r = np.array([[weights.r_force]], dtype=float)
+    p = solve_continuous_are(a, b, q, r)
+    k_force = np.linalg.solve(r, b.T @ p).reshape(-1)
+    k_current = k_force * params.wheel_radius_m / (2.0 * params.wheel_torque_constant_nm_per_a)
+    return a, b, k_force, k_current
+
+
+def selected_current_gains() -> np.ndarray:
+    if LQR_CURRENT_SIGN not in (-1.0, 1.0):
+        raise ValueError("LQR_CURRENT_SIGN must be -1.0 or +1.0.")
+    if GAIN_MODE == "auto_lqr":
+        gains = K_CURRENT_LQR
+    elif GAIN_MODE == "manual_current":
+        gains = np.array(
+            [K_WHEEL_POSITION_CURRENT, K_WHEEL_VELOCITY_CURRENT, K_PITCH_CURRENT, K_PITCH_RATE_CURRENT],
+            dtype=float,
+        )
+    else:
+        raise ValueError("GAIN_MODE must be 'auto_lqr' or 'manual_current'.")
+    return LQR_CURRENT_SIGN * gains
+
+
+A_LQR, B_LQR, K_FORCE_LQR, K_CURRENT_LQR = calculate_lqr_gains(LQR_PHYSICAL_PARAMS, LQR_WEIGHTS)
 
 
 @dataclass(frozen=True)
@@ -171,8 +280,8 @@ def compute_action(state: RobotState) -> RobotAction:
             theta_dot = -state.angular_velocity_body_rad_s[0]
             wheel_position_m = 0.5 * sum(state.wheel_position_rad) * R_WHEEL
             wheel_velocity_m_s = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
-        lqr_state = np.array([theta, theta_dot, wheel_position_m, wheel_velocity_m_s])
-        i_des = 0.0 if args_cli.floor_motors_disabled else float(-(K_LQR @ lqr_state)[0])
+        lqr_state = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot], dtype=float)
+        i_des = 0.0 if args_cli.floor_motors_disabled else float(-(selected_current_gains() @ lqr_state))
         wheel_current = (i_des, i_des)
 
     return RobotAction(
@@ -203,19 +312,38 @@ def yaw_from_quat_wxyz(quat_wxyz: tuple[float, float, float, float]) -> float:
 
 
 def lqr_current_for_pitch_deg(pitch_deg: float) -> float:
-    """Return the zero-rate, zero-position LQR current command."""
-    state = np.array([math.radians(pitch_deg), 0.0, 0.0, 0.0])
-    return float(-(K_LQR @ state)[0])
+    """Return the selected zero-rate, zero-position current command."""
+    state = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0], dtype=float)
+    return float(-(selected_current_gains() @ state))
 
 
 def print_lqr_diagnostic() -> None:
-    """Print the analytical model and verify the artificial pitch sign test."""
-    print("Extracted parameters:")
-    print(f"  m_b={M_B}  m_w={M_W}  I_b={I_B}  I_w={I_W}")
-    print(f"  l={L}  r={R_WHEEL}  g={G}  Kt={KT}")
-    print("A =", A_LQR)
-    print("B =", B_LQR)
-    print("K =", K_LQR)
+    """Print the selected gain source and verify the pitch sign test."""
+    params = LQR_PHYSICAL_PARAMS
+    print(f"[LQR]: GAIN_MODE={GAIN_MODE}")
+    print(f"[LQR]: LQR_CURRENT_SIGN={LQR_CURRENT_SIGN:+.1f}")
+    print("[LQR]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]")
+    print("[LQR]: auto physical parameters:")
+    print(f"  body_mass_kg={params.body_mass_kg:.6g}")
+    print(f"  wheel_cart_mass_kg={params.wheel_cart_mass_kg:.6g}")
+    print(f"  wheel_radius_m={params.wheel_radius_m:.6g}")
+    print(f"  body_com_height_m={params.body_com_height_m:.6g}")
+    print(f"  body_pitch_inertia_kg_m2={params.body_pitch_inertia_kg_m2:.12g}")
+    print(f"  wheel_torque_constant_nm_per_a={params.wheel_torque_constant_nm_per_a:.6g}")
+    print("[LQR]: A =", A_LQR)
+    print("[LQR]: B =", B_LQR)
+    print("[LQR]: K_force for forward force N = -K_force @ state:", K_FORCE_LQR)
+    print("[LQR]: K_current per wheel A = -K_current @ state:", K_CURRENT_LQR)
+    print("[LQR]: selected K_current per wheel A = -K_selected @ state:", selected_current_gains())
+    print(
+        "[LQR]: current equation: i_des = -("
+        "K_pos*position_m + K_vel*velocity_m_s + K_pitch*pitch_rad + K_pitch_rate*pitch_rate_rad_s)"
+    )
+    print(
+        "[LQR]: manual current gain names: "
+        "K_WHEEL_POSITION_CURRENT, K_WHEEL_VELOCITY_CURRENT, K_PITCH_CURRENT, K_PITCH_RATE_CURRENT"
+    )
+    print("[LQR]: roll current gains are exposed but unused by equal-current wheel balancing.")
     positive_current = lqr_current_for_pitch_deg(1.0)
     negative_current = lqr_current_for_pitch_deg(-1.0)
     print(f"[SIGN TEST] theta=+1.0 deg -> i_des={positive_current:+.6f} A")
