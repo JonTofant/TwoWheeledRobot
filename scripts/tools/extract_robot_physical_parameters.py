@@ -35,7 +35,7 @@ WHEEL_LINK_NAMES = ["DDSM115_Simplified", "DDSM115_Simplified_01"]
 # the robot moves along Y, Z is vertical, and the wheel axle/pitch axis is X.
 WHEEL_SPIN_AXIS_WORLD = (1.0, 0.0, 0.0)
 
-parser = argparse.ArgumentParser(description="Extract robot mass properties for a 4-state LQR model.")
+parser = argparse.ArgumentParser(description="Extract robot mass properties for 4-state/6-state LQR models.")
 parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-Standup-v0")
 parser.add_argument("--output", type=str, default="outputs/robot_physical_parameters.csv")
 AppLauncher.add_app_launcher_args(parser)
@@ -180,7 +180,10 @@ def _build_csv_rows(links: list[LinkProperties], stage: Usd.Stage) -> list[dict[
     axle_center = sum((link.origin_world_m for link in wheel_links), start=torch.zeros(3)) / len(wheel_links)
     axis = torch.tensor(WHEEL_SPIN_AXIS_WORLD, dtype=torch.float64)
     axis /= torch.linalg.vector_norm(axis)
+    yaw_axis = torch.tensor((0.0, 0.0, 1.0), dtype=torch.float64)
     wheel_spin_inertias = [float(axis @ link.inertia_world_kg_m2 @ axis) for link in wheel_links]
+    track_width = float(torch.linalg.vector_norm(wheel_links[0].origin_world_m - wheel_links[1].origin_world_m))
+    body_yaw_inertia = float(yaw_axis @ body_inertia @ yaw_axis)
     wheel_radius, wheel_radius_notes = _wheel_radius_from_geometry(stage, wheel_links)
 
     rows: list[dict[str, str]] = []
@@ -208,6 +211,8 @@ def _build_csv_rows(links: list[LinkProperties], stage: Usd.Stage) -> list[dict[
         ("wheel_axle_center_z", float(axle_center[2]), "m", "average wheel rigid-body origin; world frame"),
         ("com_height_above_wheel_axle_m", float(body_com[2] - axle_center[2]), "m", "LQR l parameter; world Z"),
         ("body_pitch_inertia_kg_m2", float(axis @ body_inertia @ axis), "kg*m^2", "I_b about wheel axle/pitch axis world X at combined non-wheel COM"),
+        ("track_width_m", track_width, "m", "left/right wheel rigid-body origin distance; yaw moment arm uses half this value"),
+        ("body_yaw_inertia_kg_m2", body_yaw_inertia, "kg*m^2", "I_z about vertical world Z at combined non-wheel COM"),
         (
             "wheel_rotational_inertia_kg_m2",
             sum(wheel_spin_inertias) / len(wheel_spin_inertias),

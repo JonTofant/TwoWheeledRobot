@@ -57,6 +57,36 @@ parser.add_argument("--floor-motors-disabled", action="store_true", help="Run th
 parser.add_argument("--max-test-time-s", type=float, default=5.0, help="Stop lqr-floor diagnostics after this simulated duration.")
 parser.add_argument("--floor-stop-pitch-deg", type=float, default=10.0, help="Stop lqr-floor diagnostics when |theta| exceeds this value.")
 parser.add_argument(
+    "--disturbance",
+    choices=("none", "forward", "backward", "yaw-left", "yaw-right", "forward-yaw"),
+    default="none",
+    help="Optional scripted external wrench for lqr-floor disturbance tests.",
+)
+parser.add_argument("--disturbance-start-s", type=float, default=1.5, help="Sim time when the scripted disturbance starts.")
+parser.add_argument("--disturbance-duration-s", type=float, default=0.20, help="Duration of the scripted disturbance.")
+parser.add_argument("--disturbance-force-n", type=float, default=5.0, help="Forward/backward disturbance force magnitude in newtons.")
+parser.add_argument("--disturbance-yaw-torque-nm", type=float, default=0.25, help="Yaw disturbance torque magnitude in Nm.")
+parser.add_argument("--disturbance-body", type=str, default="Platform_Group", help="Robot body name receiving the external wrench.")
+parser.add_argument(
+    "--actuator-disturbance",
+    choices=("none", "physical-forward"),
+    default="none",
+    help="Optional deterministic two-wheel current disturbance added after the LQR command in lqr-floor mode.",
+)
+parser.add_argument("--actuator-disturbance-start-s", type=float, default=1.5, help="Requested start time for the actuator disturbance.")
+parser.add_argument("--actuator-disturbance-samples", type=int, default=2, help="Number of control samples to inject the actuator disturbance.")
+parser.add_argument(
+    "--actuator-disturbance-current-a",
+    type=float,
+    default=0.20,
+    help="Physical-forward disturbance magnitude in A. Applied as left=+value, right=-value.",
+)
+parser.add_argument("--enable-residual-rl", action="store_true", help="Enable bounded PPO residual current on top of LQR.")
+parser.add_argument("--residual-action-limit", type=float, default=0.5, help="Absolute residual current limit per wheel in A.")
+parser.add_argument("--residual-policy", type=str, default="", help="Frozen TorchScript residual policy path for evaluation.")
+parser.add_argument("--training-mode", action="store_true", help="Mark this run as residual-RL training mode for logs/config checks.")
+parser.add_argument("--evaluation-mode", action="store_true", help="Mark this run as frozen-policy evaluation mode.")
+parser.add_argument(
     "--plot-signals", type=str, default="wheel_rpm,motor_current,motor_torque",
     help="Comma-separated plot groups/signals. Use 'all', 'none', or --list-signals.",
 )
@@ -105,6 +135,8 @@ class LqrPhysicalParams:
     body_com_height_m: float
     body_pitch_inertia_kg_m2: float
     wheel_torque_constant_nm_per_a: float
+    track_width_m: float
+    body_yaw_inertia_kg_m2: float
     no_load_current_a: float = 0.25
     no_load_speed_rpm: float = 200.0
     gravity_m_s2: float = 9.81
@@ -122,18 +154,29 @@ class LqrWeights:
     q_pitch: float
     q_pitch_rate: float
     r_force: float
+    q_yaw: float = 5.0
+    q_yaw_rate: float = 0.5
+    r_left_current: float = 1.0
+    r_right_current: float = 1.0
 
 
 # ---------------------------------------------------------------------------
 # USER LQR TUNING SECTION
 # ---------------------------------------------------------------------------
-# Select "auto_lqr" to calculate current gains from physical parameters, or
-# "manual_current" to use the editable per-wheel current gains below.
+# Select "lqr6" for the coupled yaw+pitch controller, or "lqr4" to compare
+# against the previous equal-current pitch controller.
+LQR_STATE_MODE = "lqr6"
+
+# For lqr4 only: select "auto_lqr" to calculate current gains from physical
+# parameters, or "manual_current" to use the editable per-wheel gains below.
 GAIN_MODE = "manual_current"
 
-# Flip this if positive pitch drives the wheels the wrong way. Your current sim
-# sign convention needs -1.0; use +1.0 for the raw LQR/model sign.
+# Flip common-mode pitch/forward current if positive pitch drives the wheels the
+# wrong way. Your current sim sign convention needs -1.0.
 LQR_CURRENT_SIGN = -1.0
+
+# Flip only the yaw differential row if yaw correction has the wrong sign.
+LQR_YAW_SIGN = -1.0
 
 # Manual gains are per-wheel current gain magnitudes. State units are:
 # [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s].
@@ -156,13 +199,19 @@ LQR_PHYSICAL_PARAMS = LqrPhysicalParams(
     body_com_height_m=0.14,
     body_pitch_inertia_kg_m2=0.0129596588636,
     wheel_torque_constant_nm_per_a=0.75,
+    track_width_m=0.382999941707,
+    body_yaw_inertia_kg_m2=0.0315051945189,
 )
 LQR_WEIGHTS = LqrWeights(
     q_position=0.0,
-    q_wheel_velocity=0.15,
+    q_wheel_velocity=20.0,
     q_pitch=45.0,
     q_pitch_rate=2.0,
     r_force=1.0,
+    q_yaw=10.0,
+    q_yaw_rate=0.2,
+    r_left_current=1.0,
+    r_right_current=1.0,
 )
 # ---------------------------------------------------------------------------
 # END USER LQR TUNING SECTION
@@ -202,7 +251,7 @@ def build_pitch_model(params: LqrPhysicalParams) -> tuple[np.ndarray, np.ndarray
 
 
 def calculate_lqr_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return A, B, force gains, and per-wheel current gains."""
+    """Return 4-state A, B, force gains, and equal-wheel current gains."""
     a, b = build_pitch_model(params)
     q = np.diag([weights.q_position, weights.q_wheel_velocity, weights.q_pitch, weights.q_pitch_rate])
     r = np.array([[weights.r_force]], dtype=float)
@@ -210,6 +259,44 @@ def calculate_lqr_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple
     k_force = np.linalg.solve(r, b.T @ p).reshape(-1)
     k_current = k_force * params.wheel_radius_m / (2.0 * params.wheel_torque_constant_nm_per_a)
     return a, b, k_force, k_current
+
+
+def calculate_lqr6_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return coupled 6-state, 2-current LQR matrices and gain K6."""
+    if LQR_CURRENT_SIGN not in (-1.0, 1.0):
+        raise ValueError("LQR_CURRENT_SIGN must be -1.0 or +1.0.")
+    if LQR_YAW_SIGN not in (-1.0, 1.0):
+        raise ValueError("LQR_YAW_SIGN must be -1.0 or +1.0.")
+
+    a4, b_force = build_pitch_model(params)
+    a6 = np.zeros((6, 6), dtype=float)
+    b6 = np.zeros((6, 2), dtype=float)
+    a6[0:4, 0:4] = a4
+
+    force_per_current = params.wheel_torque_constant_nm_per_a / params.wheel_radius_m
+    pitch_per_current = LQR_CURRENT_SIGN * b_force[:, 0] * force_per_current
+    b6[0:4, 0] = pitch_per_current
+    b6[0:4, 1] = pitch_per_current
+
+    a6[4, 5] = 1.0
+    yaw_gain = params.track_width_m * params.wheel_torque_constant_nm_per_a / (
+        2.0 * params.wheel_radius_m * params.body_yaw_inertia_kg_m2
+    )
+    b6[5, 0] = -LQR_YAW_SIGN * yaw_gain
+    b6[5, 1] = LQR_YAW_SIGN * yaw_gain
+
+    q6 = np.diag([
+        weights.q_position,
+        weights.q_wheel_velocity,
+        weights.q_pitch,
+        weights.q_pitch_rate,
+        weights.q_yaw,
+        weights.q_yaw_rate,
+    ])
+    r6 = np.diag([weights.r_left_current, weights.r_right_current])
+    p = solve_continuous_are(a6, b6, q6, r6)
+    k6 = np.linalg.solve(r6, b6.T @ p)
+    return a6, b6, k6
 
 
 def selected_current_gains() -> np.ndarray:
@@ -227,7 +314,19 @@ def selected_current_gains() -> np.ndarray:
     return LQR_CURRENT_SIGN * gains
 
 
+def selected_wheel_currents(lqr_state4: np.ndarray, lqr_state6: np.ndarray) -> tuple[float, float]:
+    if LQR_STATE_MODE == "lqr4":
+        i_des = float(-(selected_current_gains() @ lqr_state4))
+        return i_des, i_des
+    if LQR_STATE_MODE == "lqr6":
+        currents = -(K6_LQR @ lqr_state6)
+        return float(currents[0]), float(currents[1])
+    raise ValueError("LQR_STATE_MODE must be 'lqr4' or 'lqr6'.")
+
+
 A_LQR, B_LQR, K_FORCE_LQR, K_CURRENT_LQR = calculate_lqr_gains(LQR_PHYSICAL_PARAMS, LQR_WEIGHTS)
+A6_LQR, B6_LQR, K6_LQR = calculate_lqr6_gains(LQR_PHYSICAL_PARAMS, LQR_WEIGHTS)
+YAW_REFERENCE_RAD = 0.0
 
 
 @dataclass(frozen=True)
@@ -257,11 +356,149 @@ class RobotAction:
     wheel_current_a: tuple[float, float]
 
 
+@dataclass
+class DisturbanceState:
+    body_ids: torch.Tensor | None = None
+    body_names: list[str] | None = None
+    active: bool = False
+    force_world_n: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    torque_world_nm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+DISTURBANCE_STATE = DisturbanceState()
+
+
+@dataclass
+class ActuatorCommandDebug:
+    sample_index: int = 0
+    command_time_s: float = 0.0
+    active: bool = False
+    active_sample_index: int = -1
+    start_sample_index: int = -1
+    stop_sample_index: int = -1
+    lqr_current_a: tuple[float, float] = (0.0, 0.0)
+    rl_current_a: tuple[float, float] = (0.0, 0.0)
+    disturbance_current_a: tuple[float, float] = (0.0, 0.0)
+    commanded_current_a: tuple[float, float] = (0.0, 0.0)
+    reward: float = 0.0
+    episode_reward: float = 0.0
+
+
+ACTUATOR_COMMAND_DEBUG = ActuatorCommandDebug()
+RESIDUAL_POLICY: torch.jit.ScriptModule | torch.nn.Module | None = None
+PREVIOUS_RL_CURRENT_A = [0.0, 0.0]
+RESIDUAL_EPISODE_REWARD = 0.0
+
+
+def load_residual_policy() -> torch.jit.ScriptModule | torch.nn.Module | None:
+    """Load a frozen TorchScript residual policy on first use."""
+    global RESIDUAL_POLICY
+    if not args_cli.enable_residual_rl or not args_cli.residual_policy:
+        return None
+    if RESIDUAL_POLICY is None:
+        policy_path = Path(args_cli.residual_policy)
+        if not policy_path.is_file():
+            raise FileNotFoundError(f"Residual policy not found: {policy_path}")
+        try:
+            RESIDUAL_POLICY = torch.jit.load(str(policy_path), map_location="cpu")
+        except RuntimeError as exc:
+            exported_hint = policy_path.parent / "exported" / "policy.pt"
+            hint = (
+                f" Use the exported TorchScript policy instead: {exported_hint}"
+                if exported_hint.is_file()
+                else " Export the checkpoint first with scripts/rsl_rl/play.py, then use <run>/exported/policy.pt."
+            )
+            raise RuntimeError(
+                f"Residual policy must be a TorchScript exported policy.pt, not an RSL-RL training checkpoint: "
+                f"{policy_path}.{hint}"
+            ) from exc
+        RESIDUAL_POLICY.eval()
+        print(f"[RESIDUAL RL]: loaded frozen policy {policy_path}")
+    return RESIDUAL_POLICY
+
+
+def residual_observation(
+    state: RobotState,
+    theta: float,
+    theta_dot: float,
+    base_position: float,
+    base_velocity: float,
+) -> torch.Tensor:
+    """Build the 8D residual PPO observation from existing controller state."""
+    return torch.tensor(
+        [
+            theta,
+            theta_dot,
+            base_position,
+            base_velocity,
+            state.wheel_velocity_rad_s[0] / LQR_PHYSICAL_PARAMS.no_load_speed_rpm * 60.0 / (2.0 * math.pi),
+            state.wheel_velocity_rad_s[1] / LQR_PHYSICAL_PARAMS.no_load_speed_rpm * 60.0 / (2.0 * math.pi),
+            PREVIOUS_RL_CURRENT_A[0] / max(args_cli.residual_action_limit, 1.0e-6),
+            PREVIOUS_RL_CURRENT_A[1] / max(args_cli.residual_action_limit, 1.0e-6),
+        ],
+        dtype=torch.float32,
+    ).unsqueeze(0)
+
+
+def residual_current_from_policy(
+    state: RobotState,
+    theta: float,
+    theta_dot: float,
+    base_position: float,
+    base_velocity: float,
+) -> tuple[float, float]:
+    """Return bounded residual current in amperes; zero if disabled/no policy."""
+    if not args_cli.enable_residual_rl:
+        return (0.0, 0.0)
+    policy = load_residual_policy()
+    if policy is None:
+        return (0.0, 0.0)
+    obs = residual_observation(state, theta, theta_dot, base_position, base_velocity)
+    with torch.inference_mode():
+        raw_action = policy(obs)
+    action = torch.as_tensor(raw_action, dtype=torch.float32).reshape(-1)[:2].clamp(-1.0, 1.0)
+    residual = action * float(args_cli.residual_action_limit)
+    return (float(residual[0]), float(residual[1]))
+
+
+def residual_reward(theta: float, theta_dot: float, position: float, rl_current: tuple[float, float]) -> float:
+    return (
+        -(theta ** 2)
+        - 0.1 * (theta_dot ** 2)
+        - 0.05 * (position ** 2)
+        - 0.01 * (rl_current[0] ** 2 + rl_current[1] ** 2)
+    )
+
+
 # ---------------------------------------------------------------------------
 # USER CONTROL SECTION
 # ---------------------------------------------------------------------------
-def compute_action(state: RobotState) -> RobotAction:
+def actuator_disturbance_current(control_sample: int) -> tuple[bool, tuple[float, float], int]:
+    """Return whether the deterministic actuator disturbance is active this sample."""
+    if args_cli.actuator_disturbance == "none":
+        return False, (0.0, 0.0), -1
+    if args_cli.test_mode != "lqr-floor":
+        return False, (0.0, 0.0), -1
+    start = ACTUATOR_COMMAND_DEBUG.start_sample_index
+    stop = ACTUATOR_COMMAND_DEBUG.stop_sample_index
+    active = start <= control_sample < stop
+    if not active:
+        return False, (0.0, 0.0), -1
+    magnitude = args_cli.actuator_disturbance_current_a
+    if args_cli.actuator_disturbance == "physical-forward":
+        return True, (magnitude, -magnitude), control_sample - start
+    raise ValueError(f"Unsupported actuator disturbance '{args_cli.actuator_disturbance}'.")
+
+
+def compute_action(state: RobotState, control_sample: int) -> RobotAction:
     """Return physical wheel-current commands for the selected diagnostic."""
+    global RESIDUAL_EPISODE_REWARD
+    lqr_current = (0.0, 0.0)
+    rl_current = (0.0, 0.0)
+    disturbance_current = (0.0, 0.0)
+    disturbance_active = False
+    disturbance_active_sample = -1
+    reward = 0.0
     if args_cli.test_mode == "free-spin":
         left_current = args_cli.left_motor_test_current
         right_current = args_cli.right_motor_test_current
@@ -280,9 +517,35 @@ def compute_action(state: RobotState) -> RobotAction:
             theta_dot = -state.angular_velocity_body_rad_s[0]
             wheel_position_m = 0.5 * sum(state.wheel_position_rad) * R_WHEEL
             wheel_velocity_m_s = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
-        lqr_state = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot], dtype=float)
-        i_des = 0.0 if args_cli.floor_motors_disabled else float(-(selected_current_gains() @ lqr_state))
-        wheel_current = (i_des, i_des)
+        yaw = wrap_angle_rad(yaw_from_quat_wxyz(state.root_orientation_world_quat_wxyz) - YAW_REFERENCE_RAD)
+        yaw_rate = state.angular_velocity_world_rad_s[2]
+        lqr_state4 = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot], dtype=float)
+        lqr_state6 = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot, yaw, yaw_rate], dtype=float)
+        lqr_current = (0.0, 0.0) if args_cli.floor_motors_disabled else selected_wheel_currents(lqr_state4, lqr_state6)
+        rl_current = residual_current_from_policy(state, theta, theta_dot, wheel_position_m, wheel_velocity_m_s)
+        rl_current = (
+            max(-args_cli.residual_action_limit, min(args_cli.residual_action_limit, rl_current[0])),
+            max(-args_cli.residual_action_limit, min(args_cli.residual_action_limit, rl_current[1])),
+        )
+        disturbance_active, disturbance_current, disturbance_active_sample = actuator_disturbance_current(control_sample)
+        wheel_current = (
+            lqr_current[0] + rl_current[0] + disturbance_current[0],
+            lqr_current[1] + rl_current[1] + disturbance_current[1],
+        )
+        reward = residual_reward(theta, theta_dot, wheel_position_m, rl_current)
+        RESIDUAL_EPISODE_REWARD += reward
+
+    PREVIOUS_RL_CURRENT_A[0], PREVIOUS_RL_CURRENT_A[1] = rl_current
+    ACTUATOR_COMMAND_DEBUG.sample_index = control_sample
+    ACTUATOR_COMMAND_DEBUG.command_time_s = state.time_s
+    ACTUATOR_COMMAND_DEBUG.active = disturbance_active
+    ACTUATOR_COMMAND_DEBUG.active_sample_index = disturbance_active_sample
+    ACTUATOR_COMMAND_DEBUG.lqr_current_a = lqr_current
+    ACTUATOR_COMMAND_DEBUG.rl_current_a = rl_current
+    ACTUATOR_COMMAND_DEBUG.disturbance_current_a = disturbance_current
+    ACTUATOR_COMMAND_DEBUG.commanded_current_a = wheel_current
+    ACTUATOR_COMMAND_DEBUG.reward = reward
+    ACTUATOR_COMMAND_DEBUG.episode_reward = RESIDUAL_EPISODE_REWARD
 
     return RobotAction(
         cg_joint_position_rad=(0.0, 0.0, 0.0, 0.0),
@@ -311,46 +574,62 @@ def yaw_from_quat_wxyz(quat_wxyz: tuple[float, float, float, float]) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
+def wrap_angle_rad(value: float) -> float:
+    """Wrap an angle to [-pi, pi]."""
+    return math.atan2(math.sin(value), math.cos(value))
+
+
+def selected_currents_for_synthetic_state(pitch_deg: float = 0.0, yaw_deg: float = 0.0) -> tuple[float, float]:
+    """Return selected currents for zero-rate artificial pitch/yaw tests."""
+    state4 = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0], dtype=float)
+    state6 = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0, math.radians(yaw_deg), 0.0], dtype=float)
+    return selected_wheel_currents(state4, state6)
+
+
 def lqr_current_for_pitch_deg(pitch_deg: float) -> float:
-    """Return the selected zero-rate, zero-position current command."""
-    state = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0], dtype=float)
-    return float(-(selected_current_gains() @ state))
+    """Return the max selected zero-rate, zero-position current command."""
+    left_current, right_current = selected_currents_for_synthetic_state(pitch_deg=pitch_deg)
+    return max(abs(left_current), abs(right_current))
 
 
 def print_lqr_diagnostic() -> None:
-    """Print the selected gain source and verify the pitch sign test."""
+    """Print selected gain source and pitch/yaw sign tests."""
     params = LQR_PHYSICAL_PARAMS
+    print(f"[LQR]: LQR_STATE_MODE={LQR_STATE_MODE}")
     print(f"[LQR]: GAIN_MODE={GAIN_MODE}")
     print(f"[LQR]: LQR_CURRENT_SIGN={LQR_CURRENT_SIGN:+.1f}")
-    print("[LQR]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]")
-    print("[LQR]: auto physical parameters:")
+    print(f"[LQR]: LQR_YAW_SIGN={LQR_YAW_SIGN:+.1f}")
+    print("[LQR4]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]")
+    print("[LQR6]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s, yaw_rad, yaw_rate_rad_s]")
+    print("[LQR]: physical parameters:")
     print(f"  body_mass_kg={params.body_mass_kg:.6g}")
     print(f"  wheel_cart_mass_kg={params.wheel_cart_mass_kg:.6g}")
     print(f"  wheel_radius_m={params.wheel_radius_m:.6g}")
     print(f"  body_com_height_m={params.body_com_height_m:.6g}")
     print(f"  body_pitch_inertia_kg_m2={params.body_pitch_inertia_kg_m2:.12g}")
     print(f"  wheel_torque_constant_nm_per_a={params.wheel_torque_constant_nm_per_a:.6g}")
-    print("[LQR]: A =", A_LQR)
-    print("[LQR]: B =", B_LQR)
-    print("[LQR]: K_force for forward force N = -K_force @ state:", K_FORCE_LQR)
-    print("[LQR]: K_current per wheel A = -K_current @ state:", K_CURRENT_LQR)
-    print("[LQR]: selected K_current per wheel A = -K_selected @ state:", selected_current_gains())
-    print(
-        "[LQR]: current equation: i_des = -("
-        "K_pos*position_m + K_vel*velocity_m_s + K_pitch*pitch_rad + K_pitch_rate*pitch_rate_rad_s)"
-    )
-    print(
-        "[LQR]: manual current gain names: "
-        "K_WHEEL_POSITION_CURRENT, K_WHEEL_VELOCITY_CURRENT, K_PITCH_CURRENT, K_PITCH_RATE_CURRENT"
-    )
-    print("[LQR]: roll current gains are exposed but unused by equal-current wheel balancing.")
-    positive_current = lqr_current_for_pitch_deg(1.0)
-    negative_current = lqr_current_for_pitch_deg(-1.0)
-    print(f"[SIGN TEST] theta=+1.0 deg -> i_des={positive_current:+.6f} A")
-    print(f"[SIGN TEST] theta=-1.0 deg -> i_des={negative_current:+.6f} A")
-    if positive_current == 0.0 or negative_current == 0.0 or positive_current * negative_current >= 0.0:
-        raise RuntimeError("LQR pitch sign test failed: positive and negative pitch must produce opposite nonzero currents.")
-    print("[SIGN TEST] PASS: positive and negative pitch produce opposite current commands.")
+    print(f"  track_width_m={params.track_width_m:.12g}")
+    print(f"  body_yaw_inertia_kg_m2={params.body_yaw_inertia_kg_m2:.12g}")
+    print("[LQR4]: A4 =", A_LQR)
+    print("[LQR4]: B_force =", B_LQR)
+    print("[LQR4]: K_force for forward force N = -K_force @ state:", K_FORCE_LQR)
+    print("[LQR4]: K_current equal wheel A = -K_current @ state:", K_CURRENT_LQR)
+    print("[LQR4]: selected K_current equal wheel A = -K_selected @ state:", selected_current_gains())
+    print("[LQR6]: A6 =", A6_LQR)
+    print("[LQR6]: B6 =", B6_LQR)
+    print("[LQR6]: K6 for wheel currents A = -K6 @ state:", K6_LQR)
+    pitch_left, pitch_right = selected_currents_for_synthetic_state(pitch_deg=1.0, yaw_deg=0.0)
+    yaw_left, yaw_right = selected_currents_for_synthetic_state(pitch_deg=0.0, yaw_deg=1.0)
+    print(f"[SIGN TEST] selected pitch=+1.0 deg yaw=0 -> i_left={pitch_left:+.6f} A  i_right={pitch_right:+.6f} A")
+    print(f"[SIGN TEST] selected pitch=0 yaw=+1.0 deg -> i_left={yaw_left:+.6f} A  i_right={yaw_right:+.6f} A")
+    if pitch_left == 0.0 or pitch_right == 0.0 or pitch_left * pitch_right <= 0.0:
+        raise RuntimeError("LQR pitch sign test failed: pitch should produce same-sign nonzero wheel currents.")
+    if LQR_STATE_MODE == "lqr6":
+        if yaw_left == 0.0 or yaw_right == 0.0 or yaw_left * yaw_right >= 0.0:
+            raise RuntimeError("LQR yaw sign test failed: yaw should produce opposite-sign nonzero wheel currents.")
+        print("[SIGN TEST] PASS: pitch uses common-mode current and yaw uses differential current.")
+    else:
+        print("[SIGN TEST] PASS: lqr4 pitch common-mode test passed; yaw separation is only active in lqr6 mode.")
 
 
 def read_state(env: Any, time_s: float) -> RobotState:
@@ -405,6 +684,82 @@ def read_wheel_contact_forces(env: Any) -> tuple[float, float]:
     return tuple(float(v) for v in torch.linalg.vector_norm(forces, dim=-1).detach().cpu().tolist())
 
 
+def resolve_disturbance_body(env: Any) -> None:
+    """Resolve the single body receiving the scripted external wrench."""
+    if args_cli.disturbance == "none":
+        return
+    body_ids, body_names = env.robot.find_bodies(args_cli.disturbance_body, preserve_order=True)
+    if not body_ids:
+        available = ", ".join(env.robot.body_names)
+        raise RuntimeError(
+            f"Disturbance body '{args_cli.disturbance_body}' not found. "
+            f"Available body names: {available}"
+        )
+    if len(body_ids) != 1:
+        raise RuntimeError(f"Disturbance body pattern '{args_cli.disturbance_body}' matched multiple bodies: {body_names}")
+    DISTURBANCE_STATE.body_ids = torch.tensor(body_ids, device=env.device, dtype=torch.long)
+    DISTURBANCE_STATE.body_names = body_names
+
+
+def disturbance_wrench(time_s: float) -> tuple[bool, tuple[float, float, float], tuple[float, float, float]]:
+    """Return active flag plus world-frame force and torque for the configured disturbance."""
+    if args_cli.disturbance == "none":
+        return False, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    start = args_cli.disturbance_start_s
+    end = start + args_cli.disturbance_duration_s
+    active = start <= time_s < end
+    if not active:
+        return False, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+
+    forward = (math.cos(YAW_REFERENCE_RAD), math.sin(YAW_REFERENCE_RAD), 0.0)
+    force_scale = 0.0
+    torque_z = 0.0
+    if args_cli.disturbance in ("forward", "forward-yaw"):
+        force_scale = args_cli.disturbance_force_n
+    elif args_cli.disturbance == "backward":
+        force_scale = -args_cli.disturbance_force_n
+    if args_cli.disturbance in ("yaw-left", "forward-yaw"):
+        torque_z = args_cli.disturbance_yaw_torque_nm
+    elif args_cli.disturbance == "yaw-right":
+        torque_z = -args_cli.disturbance_yaw_torque_nm
+    force = (force_scale * forward[0], force_scale * forward[1], 0.0)
+    torque = (0.0, 0.0, torque_z)
+    return True, force, torque
+
+
+def apply_disturbance(env: Any, time_s: float) -> None:
+    """Apply or clear the configured scripted external wrench."""
+    if args_cli.disturbance == "none":
+        DISTURBANCE_STATE.active = False
+        DISTURBANCE_STATE.force_world_n = (0.0, 0.0, 0.0)
+        DISTURBANCE_STATE.torque_world_nm = (0.0, 0.0, 0.0)
+        return
+    if DISTURBANCE_STATE.body_ids is None:
+        raise RuntimeError("Disturbance body was not resolved before applying disturbance.")
+
+    active, force, torque = disturbance_wrench(time_s)
+    forces = torch.tensor([[force]], device=env.device, dtype=torch.float32)
+    torques = torch.tensor([[torque]], device=env.device, dtype=torch.float32)
+    env.robot.permanent_wrench_composer.set_forces_and_torques(
+        forces=forces,
+        torques=torques,
+        body_ids=DISTURBANCE_STATE.body_ids,
+        is_global=True,
+    )
+
+    if active and not DISTURBANCE_STATE.active:
+        print(
+            "[DISTURBANCE]: active "
+            f"mode={args_cli.disturbance} time={time_s:.3f} s "
+            f"force_world={force} N torque_world={torque} Nm"
+        )
+    if not active and DISTURBANCE_STATE.active:
+        print(f"[DISTURBANCE]: cleared time={time_s:.3f} s")
+    DISTURBANCE_STATE.active = active
+    DISTURBANCE_STATE.force_world_n = force
+    DISTURBANCE_STATE.torque_world_nm = torque
+
+
 def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], contact_forces: tuple[float, float]) -> dict[str, float]:
     """Flatten state and action into named CSV/plot signals."""
     theta = pitch_from_projected_gravity(state.projected_gravity_body)
@@ -413,6 +768,8 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
     velocity = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
     base_yaw = yaw_from_quat_wxyz(state.root_orientation_world_quat_wxyz)
     base_yaw_rate = state.angular_velocity_world_rad_s[2]
+    yaw = wrap_angle_rad(base_yaw - YAW_REFERENCE_RAD)
+    yaw_rate = base_yaw_rate
     left_wheel_rpm = state.wheel_velocity_rad_s[0] * 60.0 / (2.0 * math.pi)
     right_wheel_rpm = state.wheel_velocity_rad_s[1] * 60.0 / (2.0 * math.pi)
     rpm_diff = right_wheel_rpm - left_wheel_rpm
@@ -427,6 +784,37 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
         "velocity": velocity,
         "base_yaw": base_yaw,
         "base_yaw_rate": base_yaw_rate,
+        "yaw": yaw,
+        "yaw_rate": yaw_rate,
+        "disturbance_active": float(DISTURBANCE_STATE.active),
+        "disturbance_force_x_n": DISTURBANCE_STATE.force_world_n[0],
+        "disturbance_force_y_n": DISTURBANCE_STATE.force_world_n[1],
+        "disturbance_force_z_n": DISTURBANCE_STATE.force_world_n[2],
+        "disturbance_torque_z_nm": DISTURBANCE_STATE.torque_world_nm[2],
+        "actuator_disturbance_active": float(ACTUATOR_COMMAND_DEBUG.active),
+        "actuator_disturbance_sample": float(ACTUATOR_COMMAND_DEBUG.active_sample_index),
+        "actuator_command_sample": float(ACTUATOR_COMMAND_DEBUG.sample_index),
+        "actuator_command_time_s": ACTUATOR_COMMAND_DEBUG.command_time_s,
+        "u_left_lqr": ACTUATOR_COMMAND_DEBUG.lqr_current_a[0],
+        "u_right_lqr": ACTUATOR_COMMAND_DEBUG.lqr_current_a[1],
+        "u_left_lqr_a": ACTUATOR_COMMAND_DEBUG.lqr_current_a[0],
+        "u_right_lqr_a": ACTUATOR_COMMAND_DEBUG.lqr_current_a[1],
+        "u_left_rl": ACTUATOR_COMMAND_DEBUG.rl_current_a[0],
+        "u_right_rl": ACTUATOR_COMMAND_DEBUG.rl_current_a[1],
+        "u_left_rl_a": ACTUATOR_COMMAND_DEBUG.rl_current_a[0],
+        "u_right_rl_a": ACTUATOR_COMMAND_DEBUG.rl_current_a[1],
+        "disturbance_current": args_cli.actuator_disturbance_current_a if args_cli.actuator_disturbance != "none" else 0.0,
+        "disturbance_start": args_cli.actuator_disturbance_start_s,
+        "disturbance_left_a": ACTUATOR_COMMAND_DEBUG.disturbance_current_a[0],
+        "disturbance_right_a": ACTUATOR_COMMAND_DEBUG.disturbance_current_a[1],
+        "u_left_final": ACTUATOR_COMMAND_DEBUG.commanded_current_a[0],
+        "u_right_final": ACTUATOR_COMMAND_DEBUG.commanded_current_a[1],
+        "u_left_final_a": ACTUATOR_COMMAND_DEBUG.commanded_current_a[0],
+        "u_right_final_a": ACTUATOR_COMMAND_DEBUG.commanded_current_a[1],
+        "u_left_cmd_a": ACTUATOR_COMMAND_DEBUG.commanded_current_a[0],
+        "u_right_cmd_a": ACTUATOR_COMMAND_DEBUG.commanded_current_a[1],
+        "reward": ACTUATOR_COMMAND_DEBUG.reward,
+        "episode_reward": ACTUATOR_COMMAND_DEBUG.episode_reward,
         "base_position_x": state.root_position_world_m[0],
         "base_position_y": state.root_position_world_m[1],
         "base_position_z": state.root_position_world_m[2],
@@ -472,6 +860,7 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
 
 PLOT_SIGNALS: dict[str, tuple[str, str]] = {
     "theta": ("Pitch angle", "rad"), "theta_dot": ("Pitch rate", "rad/s"),
+    "yaw": ("Yaw error", "rad"), "yaw_rate": ("Yaw rate", "rad/s"),
     "base_yaw": ("Base yaw", "rad"), "base_yaw_rate": ("Base yaw rate", "rad/s"),
     "left_wheel_velocity_rad_s": ("Left wheel velocity", "rad/s"), "right_wheel_velocity_rad_s": ("Right wheel velocity", "rad/s"),
     "left_wheel_rpm": ("Left wheel speed", "rpm"), "right_wheel_rpm": ("Right wheel speed", "rpm"),
@@ -490,7 +879,8 @@ PLOT_SIGNALS: dict[str, tuple[str, str]] = {
 }
 PLOT_GROUPS = {
     "theta": ("theta", "theta_dot"),
-    "yaw": ("base_yaw", "base_yaw_rate"),
+    "yaw": ("yaw", "yaw_rate"),
+    "base_yaw": ("base_yaw", "base_yaw_rate"),
     "wheel_velocity": ("left_wheel_velocity_rad_s", "right_wheel_velocity_rad_s"),
     "wheel_rpm": ("left_wheel_rpm", "right_wheel_rpm"),
     "wheel_position": ("left_wheel_position_rad", "right_wheel_position_rad"),
@@ -632,8 +1022,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         print_signal_names(); return
     if args_cli.test_mode == "lqr-floor" and not 0.5 <= abs(args_cli.floor_initial_pitch_deg) <= 3.0:
         raise ValueError("--floor-initial-pitch-deg magnitude must be between 0.5 and 3 degrees.")
+    if args_cli.disturbance_start_s < 0.0:
+        raise ValueError("--disturbance-start-s must be non-negative.")
+    if args_cli.disturbance_duration_s < 0.0:
+        raise ValueError("--disturbance-duration-s must be non-negative.")
+    if args_cli.actuator_disturbance_start_s < 0.0:
+        raise ValueError("--actuator-disturbance-start-s must be non-negative.")
+    if args_cli.actuator_disturbance_samples < 0:
+        raise ValueError("--actuator-disturbance-samples must be non-negative.")
+    if args_cli.actuator_disturbance != "none" and args_cli.test_mode != "lqr-floor":
+        raise ValueError("--actuator-disturbance is only supported with --test-mode lqr-floor.")
+    if args_cli.residual_action_limit < 0.0:
+        raise ValueError("--residual-action-limit must be non-negative.")
+    if args_cli.residual_policy and not args_cli.enable_residual_rl:
+        raise ValueError("--residual-policy requires --enable-residual-rl.")
+    if args_cli.training_mode and args_cli.evaluation_mode:
+        raise ValueError("--training-mode and --evaluation-mode are mutually exclusive.")
     if args_cli.test_mode in ("lqr-model", "lqr-floor"):
         print_lqr_diagnostic()
+    if args_cli.enable_residual_rl:
+        mode = "training" if args_cli.training_mode else "evaluation" if args_cli.evaluation_mode else "enabled"
+        source = args_cli.residual_policy or "zero residual policy"
+        print(
+            f"[RESIDUAL RL]: mode={mode} limit={args_cli.residual_action_limit:.3f} A "
+            f"policy={source}. LQR remains active."
+        )
     signals = [] if args_cli.no_plot else resolve_plot_signals(args_cli.plot_signals)
     env_cfg.scene.num_envs = 1
     env_cfg.decimation = args_cli.control_decimation
@@ -659,6 +1072,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         env_cfg.robot_cfg.spawn.activate_contact_sensors = True
 
     env = gym.make(args_cli.task, cfg=env_cfg)
+    resolve_disturbance_body(env.unwrapped)
     contact_names: list[str] = []
     if args_cli.test_mode == "lqr-floor":
         contact_ids, contact_names = env.unwrapped.wheel_contacts.find_bodies(
@@ -672,7 +1086,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         create_base_hold_joint(args_cli.base_height)
         force_upright_fixed_spawn(env.unwrapped, args_cli.base_height)
     env.reset()
+    global YAW_REFERENCE_RAD
+    YAW_REFERENCE_RAD = yaw_from_quat_wxyz(read_state(env.unwrapped, 0.0).root_orientation_world_quat_wxyz)
     dt = env.unwrapped.step_dt
+    start_sample = math.ceil(args_cli.actuator_disturbance_start_s / dt - 1.0e-9)
+    ACTUATOR_COMMAND_DEBUG.start_sample_index = start_sample
+    ACTUATOR_COMMAND_DEBUG.stop_sample_index = start_sample + args_cli.actuator_disturbance_samples
     logger, plotter = CsvLogger(args_cli.log_csv), None
     if signals:
         try:
@@ -697,6 +1116,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         print(f"[CHECK]: gravity enabled: {not env.unwrapped.cfg.robot_cfg.spawn.rigid_props.disable_gravity}")
         print(f"[CHECK]: ground friction enabled: static={GROUND_STATIC_FRICTION:.3f}, dynamic={GROUND_DYNAMIC_FRICTION:.3f}")
         print(f"[CHECK]: wheel contact bodies: {contact_names}")
+    if args_cli.disturbance != "none":
+        print(
+            "[DISTURBANCE]: configured "
+            f"mode={args_cli.disturbance} body={DISTURBANCE_STATE.body_names} ids={DISTURBANCE_STATE.body_ids.detach().cpu().tolist() if DISTURBANCE_STATE.body_ids is not None else []} "
+            f"start={args_cli.disturbance_start_s:.3f} s duration={args_cli.disturbance_duration_s:.3f} s "
+            f"force={args_cli.disturbance_force_n:.3f} N yaw_torque={args_cli.disturbance_yaw_torque_nm:.3f} Nm"
+        )
+    if args_cli.actuator_disturbance != "none":
+        print(
+            "[ACTUATOR DISTURBANCE]: configured "
+            f"mode={args_cli.actuator_disturbance} "
+            f"requested_start={args_cli.actuator_disturbance_start_s:.6f} s "
+            f"actual_start_sample={ACTUATOR_COMMAND_DEBUG.start_sample_index} "
+            f"actual_start_time={ACTUATOR_COMMAND_DEBUG.start_sample_index * dt:.6f} s "
+            f"samples={args_cli.actuator_disturbance_samples} "
+            f"physical_forward={args_cli.actuator_disturbance_current_a:+.6f} A "
+            f"mapping left={args_cli.actuator_disturbance_current_a:+.6f} A right={-args_cli.actuator_disturbance_current_a:+.6f} A"
+        )
 
     timestep, wall_start = 0, time.time()
     try:
@@ -704,8 +1141,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
             start = time.time()
             with torch.inference_mode():
                 state = read_state(env.unwrapped, timestep * dt)
-                action = compute_action(state)
+                action = compute_action(state, timestep)
+                if ACTUATOR_COMMAND_DEBUG.active and ACTUATOR_COMMAND_DEBUG.active_sample_index == 0:
+                    print(
+                        "[ACTUATOR DISTURBANCE]: active "
+                        f"sample={ACTUATOR_COMMAND_DEBUG.sample_index} time={ACTUATOR_COMMAND_DEBUG.command_time_s:.6f} s "
+                        f"u_lqr=[{ACTUATOR_COMMAND_DEBUG.lqr_current_a[0]:+.6f}, {ACTUATOR_COMMAND_DEBUG.lqr_current_a[1]:+.6f}] A "
+                        f"u_rl=[{ACTUATOR_COMMAND_DEBUG.rl_current_a[0]:+.6f}, {ACTUATOR_COMMAND_DEBUG.rl_current_a[1]:+.6f}] A "
+                        f"disturbance=[{ACTUATOR_COMMAND_DEBUG.disturbance_current_a[0]:+.6f}, {ACTUATOR_COMMAND_DEBUG.disturbance_current_a[1]:+.6f}] A "
+                        f"u_cmd=[{ACTUATOR_COMMAND_DEBUG.commanded_current_a[0]:+.6f}, {ACTUATOR_COMMAND_DEBUG.commanded_current_a[1]:+.6f}] A"
+                    )
                 env_action = action_to_env(env.unwrapped, action)
+                apply_disturbance(env.unwrapped, state.time_s)
                 env.step(env_action)
                 state = read_state(env.unwrapped, (timestep + 1) * dt)
                 motor = read_motor_debug(env.unwrapped)

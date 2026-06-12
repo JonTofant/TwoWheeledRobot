@@ -9,6 +9,11 @@
 
 import argparse
 import sys
+from pathlib import Path
+
+_EXTENSION_SOURCE_PATH = Path(__file__).resolve().parents[2] / "source" / "TwoWheeledRobot"
+if _EXTENSION_SOURCE_PATH.is_dir():
+    sys.path.insert(0, str(_EXTENSION_SOURCE_PATH))
 
 from isaaclab.app import AppLauncher
 

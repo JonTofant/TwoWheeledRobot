@@ -67,14 +67,22 @@ summary_rows: list[dict[str, str]] = []
 report_lines = ["# LQR Floor Yaw Repeatability Analysis", ""]
 for run_number, path in enumerate(args.csv, start=1):
     data = load(path)
-    yaw = np.unwrap(data["base_yaw"])
-    yaw_delta = yaw - yaw[0]
-    yaw_rate = data["base_yaw_rate"]
+    if "yaw" in data:
+        yaw_delta = np.unwrap(data["yaw"])
+    else:
+        yaw = np.unwrap(data["base_yaw"])
+        yaw_delta = yaw - yaw[0]
+    yaw_rate = data["yaw_rate"] if "yaw_rate" in data else data["base_yaw_rate"]
     theta = data["theta"]
     rpm_diff = data["rpm_diff"]
     torque_diff = data["torque_diff"]
     contact_diff = data["contact_force_diff"]
     current_diff = data["current_diff"]
+    current_saturation_pct = 0.0
+    if "current_saturated_left" in data and "current_saturated_right" in data:
+        saturated = np.maximum(data["current_saturated_left"], data["current_saturated_right"])
+        current_saturation_pct = 100.0 * float(np.mean(saturated))
+    survived_5s = bool(data["time"][-1] >= 5.0 - 1.0e-9)
     final_position = data["position"][-1]
     position_delta = final_position - data["position"][0]
     base_dx = data["base_position_x"][-1] - data["base_position_x"][0]
@@ -96,6 +104,8 @@ for run_number, path in enumerate(args.csv, start=1):
         "max_abs_theta_deg": f"{math.degrees(max_abs(theta)):.9f}",
         "max_abs_rpm_diff": f"{max_abs(rpm_diff):.9f}",
         "max_abs_current_diff_a": f"{max_abs(current_diff):.9f}",
+        "current_saturation_pct": f"{current_saturation_pct:.9f}",
+        "survived_5s": "yes" if survived_5s else "no",
         "max_abs_torque_diff_nm": f"{max_abs(torque_diff):.9f}",
         "max_abs_contact_force_diff_n": f"{max_abs(contact_diff):.9f}",
         "corr_yaw_rate_rpm_diff": f"{corr(yaw_rate, rpm_diff):.9f}",
@@ -114,6 +124,8 @@ for run_number, path in enumerate(args.csv, start=1):
         f"- Final base displacement: `({row['final_base_x_m']}, {row['final_base_y_m']}, {row['final_base_z_m']}) m`",
         f"- Maximum absolute theta: `{row['max_abs_theta_deg']} deg`",
         f"- Maximum absolute RPM difference: `{row['max_abs_rpm_diff']} rpm`",
+        f"- Current saturation percentage: `{row['current_saturation_pct']} %`",
+        f"- Survived 5 s: `{row['survived_5s']}`",
         f"- Maximum absolute torque difference: `{row['max_abs_torque_diff_nm']} Nm`",
         f"- Maximum absolute contact-force difference: `{row['max_abs_contact_force_diff_n']} N`",
         "",
