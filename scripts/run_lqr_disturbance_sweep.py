@@ -52,6 +52,7 @@ SUMMARY_COLUMNS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--real-time", action="store_true", help="Pass --real-time to scripts/lqr_control.py.")
+    parser.add_argument("--headless", action="store_true", help="Pass --headless to scripts/lqr_control.py.")
     parser.add_argument("--currents", nargs="+", type=float, default=DEFAULT_CURRENTS, help="Disturbance currents in A.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/lqr_disturbance_sweep"))
     parser.add_argument("--enable-residual-rl", action="store_true", help="Evaluate LQR plus frozen residual PPO.")
@@ -227,6 +228,7 @@ def run_simulation(
     enable_residual_rl: bool,
     residual_policy: Path | None,
     residual_action_limit: float,
+    headless: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [
         sys.executable,
@@ -246,6 +248,8 @@ def run_simulation(
             cmd.extend(["--residual-policy", str(residual_policy)])
     if real_time:
         cmd.append("--real-time")
+    if headless:
+        cmd.append("--headless")
     print("Running:", " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=repo_root, text=True, capture_output=True, check=False)
 
@@ -353,6 +357,7 @@ def main() -> None:
             args.enable_residual_rl,
             args.residual_policy,
             args.residual_action_limit,
+            args.headless,
         )
         if result.returncode != 0:
             message = result.stderr.strip() or result.stdout.strip() or f"subprocess exited with {result.returncode}"

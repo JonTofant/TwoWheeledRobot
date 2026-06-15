@@ -39,6 +39,9 @@ PER_RUN_COLUMNS = [
     "mean_pitch_last_1s_deg",
     "final_pitch_deg",
     "max_abs_current_command_a",
+    "rms_current_command_a",
+    "mean_abs_current_command_a",
+    "control_energy_a2s",
     "csv_path",
     "error_message",
 ]
@@ -49,6 +52,9 @@ AGGREGATE_METRICS = [
     "last_1s_rms_pitch_deg",
     "last_1s_peak_to_peak_pitch_deg",
     "max_abs_current_command_a",
+    "rms_current_command_a",
+    "mean_abs_current_command_a",
+    "control_energy_a2s",
 ]
 
 
@@ -64,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--real-time", action="store_true", help="Pass --real-time to scripts/lqr_control.py.")
+    parser.add_argument("--headless", action="store_true", help="Pass --headless to scripts/lqr_control.py.")
     parser.add_argument("--no-plot", action="store_true", help="Skip PNG plot generation.")
     parser.add_argument(
         "--residual-policy",
@@ -101,6 +108,9 @@ def per_run_row(controller: str, repeat_index: int, metrics: dict[str, str]) -> 
             "mean_pitch_last_1s_deg": metrics.get("mean_pitch_last_1s_deg", ""),
             "final_pitch_deg": metrics.get("final_pitch_deg", ""),
             "max_abs_current_command_a": metrics.get("max_abs_current_command_a", ""),
+            "rms_current_command_a": metrics.get("rms_current_command_a", ""),
+            "mean_abs_current_command_a": metrics.get("mean_abs_current_command_a", ""),
+            "control_energy_a2s": metrics.get("control_energy_a2s", ""),
             "csv_path": metrics.get("csv_path", ""),
             "error_message": metrics.get("error_message", ""),
         }
@@ -130,6 +140,45 @@ def write_csv(path: Path, rows: list[dict[str, str]], columns: list[str]) -> Non
         writer = csv.DictWriter(file, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
+
+
+FINAL_COMMAND_COLUMN_CANDIDATES = [
+    ("u_left_cmd_a", "u_right_cmd_a"),
+    ("u_left_final_a", "u_right_final_a"),
+    ("u_left_final", "u_right_final"),
+    ("left_i_cmd_a", "right_i_cmd_a"),
+    ("i_cmd_left", "i_cmd_right"),
+    ("left_current_a", "right_current_a"),
+]
+
+
+def final_command_columns(df: pd.DataFrame) -> tuple[str, str]:
+    for left, right in FINAL_COMMAND_COLUMN_CANDIDATES:
+        if left in df and right in df:
+            return left, right
+    missing = ", ".join(FINAL_COMMAND_COLUMN_CANDIDATES[0])
+    raise KeyError(f"Missing required columns: {missing}")
+
+
+def mean_sample_time_s(times: pd.Series) -> float:
+    diffs = np.diff(times.astype(float).to_numpy())
+    diffs = diffs[diffs > 0.0]
+    if diffs.size == 0:
+        raise ValueError("Cannot compute sample time from CSV time column.")
+    return float(np.mean(diffs))
+
+
+def compute_control_effort_metrics(df: pd.DataFrame) -> dict[str, str]:
+    left_col, right_col = final_command_columns(df)
+    u_left = df[left_col].astype(float).to_numpy()
+    u_right = df[right_col].astype(float).to_numpy()
+    squared_sum = np.square(u_left) + np.square(u_right)
+    dt = mean_sample_time_s(sweep.time_s(df))
+    return {
+        "rms_current_command_a": format_float(float(np.sqrt(np.mean(squared_sum)))),
+        "mean_abs_current_command_a": format_float(float(np.mean(np.abs(u_left) + np.abs(u_right)))),
+        "control_energy_a2s": format_float(float(np.sum(squared_sum * dt))),
+    }
 
 
 def successful_frame(rows: list[dict[str, str]]) -> pd.DataFrame:
@@ -163,6 +212,7 @@ def aggregate_rows(rows: list[dict[str, str]], currents: list[float]) -> list[di
             row[f"{metric}_max"] = format_float(float(values.max())) if not values.empty else "nan"
         row["rms_improvement_percent"] = "nan"
         row["peak_improvement_percent"] = "nan"
+        row["rms_current_change_percent"] = "nan"
         aggregate.append(row)
 
     by_key = {(row["controller"], float(row["disturbance_current_a"])): row for row in aggregate}
@@ -177,9 +227,13 @@ def aggregate_rows(rows: list[dict[str, str]], currents: list[float]) -> list[di
         ppo_peak = parse_float(ppo["post_peak_abs_pitch_deg_mean"])
         rms_improvement = percent_improvement(lqr_rms, ppo_rms)
         peak_improvement = percent_improvement(lqr_peak, ppo_peak)
+        lqr_current = parse_float(lqr["rms_current_command_a_mean"])
+        ppo_current = parse_float(ppo["rms_current_command_a_mean"])
+        current_change = percent_change(lqr_current, ppo_current)
         for row in (lqr, ppo):
             row["rms_improvement_percent"] = format_float(rms_improvement)
             row["peak_improvement_percent"] = format_float(peak_improvement)
+            row["rms_current_change_percent"] = format_float(current_change)
 
     order = {controller: index for index, controller in enumerate(CONTROLLERS)}
     aggregate.sort(key=lambda row: (float(row["disturbance_current_a"]), order.get(row["controller"], 99)))
@@ -190,7 +244,7 @@ def aggregate_columns() -> list[str]:
     columns = ["controller", "disturbance_current_a", "successful_runs"]
     for metric in AGGREGATE_METRICS:
         columns.extend([f"{metric}_mean", f"{metric}_std", f"{metric}_min", f"{metric}_max"])
-    columns.extend(["rms_improvement_percent", "peak_improvement_percent"])
+    columns.extend(["rms_improvement_percent", "peak_improvement_percent", "rms_current_change_percent"])
     return columns
 
 
@@ -211,6 +265,12 @@ def percent_improvement(baseline: float, candidate: float) -> float:
     if math.isnan(baseline) or math.isnan(candidate) or abs(baseline) < 1.0e-12:
         return math.nan
     return 100.0 * (baseline - candidate) / baseline
+
+
+def percent_change(baseline: float, candidate: float) -> float:
+    if math.isnan(baseline) or math.isnan(candidate) or abs(baseline) < 1.0e-12:
+        return math.nan
+    return 100.0 * (candidate - baseline) / baseline
 
 
 def metric_table(aggregate: list[dict[str, str]], metric: str, currents: list[float]) -> tuple[np.ndarray, np.ndarray]:
@@ -292,6 +352,22 @@ def plot_comparisons(output_dir: Path, aggregate: list[dict[str, str]], currents
         "Peak Pitch Angle After Disturbance",
         "Peak absolute pitch angle after disturbance [deg]",
     )
+    plot_grouped_bars(
+        output_dir / "rms_current_effort_comparison.png",
+        aggregate,
+        currents,
+        "rms_current_command_a",
+        "RMS Control Effort",
+        "RMS current command [A]",
+    )
+    plot_grouped_bars(
+        output_dir / "control_energy_comparison.png",
+        aggregate,
+        currents,
+        "control_energy_a2s",
+        "Integrated Control Effort",
+        "Control effort integral [A^2s]",
+    )
 
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.2), sharex=True)
     plot_grouped_bars(
@@ -359,6 +435,7 @@ def main() -> None:
                     enable_residual,
                     args.residual_policy,
                     args.residual_action_limit,
+                    args.headless,
                 )
                 if result.returncode != 0:
                     message = result.stderr.strip() or result.stdout.strip() or f"subprocess exited with {result.returncode}"
@@ -370,7 +447,8 @@ def main() -> None:
                     continue
 
                 try:
-                    metrics, _ = sweep.compute_metrics(csv_path, current)
+                    metrics, df = sweep.compute_metrics(csv_path, current)
+                    metrics.update(compute_control_effort_metrics(df))
                 except Exception as exc:  # noqa: BLE001
                     print(
                         f"[WARN] {controller} {current:.3g} A repeat {repeat_index} produced unusable output: {exc}",
@@ -396,6 +474,8 @@ def main() -> None:
     if not args.no_plot:
         print(f"Wrote {output_dir / 'rms_pitch_comparison.png'}")
         print(f"Wrote {output_dir / 'peak_pitch_comparison.png'}")
+        print(f"Wrote {output_dir / 'rms_current_effort_comparison.png'}")
+        print(f"Wrote {output_dir / 'control_energy_comparison.png'}")
         print(f"Wrote {output_dir / 'rms_and_peak_side_by_side.png'}")
 
 
