@@ -1,5 +1,18 @@
 """
-Standup RL Environment configuration for the Two-Wheeled Leg Robot.
+Configuration for the standup Isaac Lab environment.
+
+Purpose:
+    Define timing, scene size, robot articulation, sensors, spawn distribution,
+    action scaling, reward weights, and observation noise for the standup RL
+    task.
+
+Edit here when:
+    You want to tune standup reward weights, spawn probabilities, CyberGear
+    training gains, wheel current scaling, or domain randomization.
+
+Avoid changing here without also checking:
+    standup_env.py reward/action/observation logic, scripts/uart_policy_runner.py
+    deployment normalization, and residual_lqr_env_cfg.py inherited values.
 
 The policy learns to self-right the robot from any fallen orientation (side,
 forward, backward, upside down) to the upright balancing position.  It is

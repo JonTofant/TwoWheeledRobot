@@ -1,14 +1,28 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""DDSM115 free-spin and analytical LQR model diagnostics.
+"""
+LQR, DDSM115, disturbance, and residual-policy diagnostic runner.
 
-The ``free-spin`` and ``lqr-model`` modes fix the articulation root above the
-ground, leaving the wheel joints free. The ``lqr-model`` mode is only a
-suspended-air sign and motor-model test; it cannot demonstrate balancing.
+Purpose:
+    Launch Isaac Sim for one-env diagnostics, including DDSM115 free-spin tests,
+    suspended LQR sign checks, floor-contact LQR balancing, actuator/current
+    disturbances, residual-policy evaluation, CSV logging, and live plotting.
+
+Edit here when:
+    You need to change diagnostic LQR behavior, frozen residual-policy
+    evaluation, scripted disturbances, CSV metrics, or live plot signal groups.
+
+Avoid changing here without also checking:
+    residual_lqr_env.py for LQR/residual training parity, standup_env.py for the
+    DDSM115 motor path, and downstream plotting scripts for CSV column names.
 """
 
 from __future__ import annotations
+
+# =============================================================================
+# IMPORTS AND ISAAC APP LAUNCH
+# =============================================================================
 
 """Launch Isaac Sim first."""
 
@@ -125,7 +139,6 @@ import TwoWheeledRobot.tasks  # noqa: F401
 from isaaclab.envs import DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
-from scipy.linalg import solve_continuous_are
 from TwoWheeledRobot.tasks.direct.twowheeledrobot.sim_params import (
     DDSM115_I_PEAK,
     GROUND_DYNAMIC_FRICTION,
@@ -153,51 +166,39 @@ class LqrPhysicalParams:
         return self.wheel_torque_constant_nm_per_a * self.no_load_current_a / omega_no_load_rad_s
 
 
-@dataclass(frozen=True)
-class LqrWeights:
-    q_position: float
-    q_wheel_velocity: float
-    q_pitch: float
-    q_pitch_rate: float
-    r_force: float
-    q_yaw: float = 5.0
-    q_yaw_rate: float = 0.5
-    r_left_current: float = 1.0
-    r_right_current: float = 1.0
-
+# =============================================================================
+# LQR PARAMETER DEFINITIONS
+# =============================================================================
 
 # ---------------------------------------------------------------------------
 # USER LQR TUNING SECTION
 # ---------------------------------------------------------------------------
-# Select "lqr6" for the coupled yaw+pitch controller, or "lqr4" to compare
-# against the previous equal-current pitch controller.
-LQR_STATE_MODE = "lqr6"
-
-# For lqr4 only: select "auto_lqr" to calculate current gains from physical
-# parameters, or "manual_current" to use the editable per-wheel gains below.
-GAIN_MODE = "manual_current"
-
-# Flip common-mode pitch/forward current if positive pitch drives the wheels the
-# wrong way. Your current sim sign convention needs -1.0.
-LQR_CURRENT_SIGN = -1.0
-
-# Flip only the yaw differential row if yaw correction has the wrong sign.
-LQR_YAW_SIGN = -1.0
-
-# Manual gains are per-wheel current gain magnitudes. State units are:
+# One controller design is used here: two mirrored, independent 4-state LQR
+# controllers. Both wheels share this exact gain vector. State units are:
 # [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s].
-K_WHEEL_POSITION_CURRENT = 0.0
-K_WHEEL_VELOCITY_CURRENT = 0.474502
+K_POSITION_CURRENT = 0.0
+K_VELOCITY_CURRENT = 0.474502
 K_PITCH_CURRENT = 3.21126
 K_PITCH_RATE_CURRENT = 0.327822
 
-# Equal wheel current cannot create a clean linear roll restoring input in this
-# simple fixed-leg model, so these are exposed for clarity but not used.
-K_ROLL_CURRENT = 0.0
-K_ROLL_RATE_CURRENT = 0.0
+K_SPLIT_4_STATE_LQR_CURRENT = np.array(
+    [K_POSITION_CURRENT, K_VELOCITY_CURRENT, K_PITCH_CURRENT, K_PITCH_RATE_CURRENT],
+    dtype=float,
+)
 
-# Auto LQR physical parameters. The wheel radius uses the measured 100.7 mm
-# wheel diameter; the extracted sim radius is intentionally not used here.
+# The StandupEnv action expects physical forward-positive wheel currents.
+# StandupEnv._pre_physics_step() applies the USD left-joint mirror when it turns
+# those currents into joint efforts, so lqr_control.py must not mirror them again.
+LEFT_MIRRORED_WHEEL_CURRENT_SIGN = +1.0
+RIGHT_MIRRORED_WHEEL_CURRENT_SIGN = +1.0
+
+# Projected-gravity pitch is opposite the positive pitch convention used by the
+# current LQR gains. Keep the conversion explicit at the controller boundary so
+# sensor logging remains unchanged.
+LQR_PITCH_SENSOR_SIGN = -1.0
+
+# Physical parameters retained for unit conversion and diagnostics. Yaw-related
+# values are not controller states in this script; yaw is logged only.
 LQR_PHYSICAL_PARAMS = LqrPhysicalParams(
     body_mass_kg=2.6,
     wheel_cart_mass_kg=1.53,
@@ -208,17 +209,6 @@ LQR_PHYSICAL_PARAMS = LqrPhysicalParams(
     track_width_m=0.382999941707,
     body_yaw_inertia_kg_m2=0.0315051945189,
 )
-LQR_WEIGHTS = LqrWeights(
-    q_position=0.0,
-    q_wheel_velocity=20.0,
-    q_pitch=45.0,
-    q_pitch_rate=2.0,
-    r_force=1.0,
-    q_yaw=10.0,
-    q_yaw_rate=0.2,
-    r_left_current=1.0,
-    r_right_current=1.0,
-)
 # ---------------------------------------------------------------------------
 # END USER LQR TUNING SECTION
 # ---------------------------------------------------------------------------
@@ -226,113 +216,82 @@ LQR_WEIGHTS = LqrWeights(
 R_WHEEL = LQR_PHYSICAL_PARAMS.wheel_radius_m
 
 
-def build_pitch_model(params: LqrPhysicalParams) -> tuple[np.ndarray, np.ndarray]:
-    """Return A, B for state [position, velocity, pitch, pitch_rate]."""
-    m = params.body_mass_kg
-    m_cart = params.wheel_cart_mass_kg
-    l = params.body_com_height_m
-    inertia = params.body_pitch_inertia_kg_m2
-    g = params.gravity_m_s2
-    b = 2.0 * params.wheel_internal_damping_nm_s_rad / (params.wheel_radius_m**2)
+# =============================================================================
+# LQR MODEL AND GAIN CALCULATION
+# =============================================================================
 
-    denominator = inertia * (m_cart + m) + m_cart * m * l**2
-    a22 = -((inertia + m * l**2) * b) / denominator
-    a23 = (m**2 * g * l**2) / denominator
-    a42 = -(m * l * b) / denominator
-    a43 = (m * g * l * (m_cart + m)) / denominator
-    b2 = (inertia + m * l**2) / denominator
-    b4 = (m * l) / denominator
+def compute_single_wheel_4_state_lqr_current(
+    wheel_position_m: float,
+    wheel_velocity_m_s: float,
+    pitch_rad: float,
+    pitch_rate_rad_s: float,
+) -> float:
+    """Return one wheel's physical 4-state LQR current before USD mirroring.
 
-    a = np.array(
-        [
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, a22, a23, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, a42, a43, 0.0],
-        ],
+    Inputs are one wheel path error in meters, one wheel velocity error in m/s,
+    pitch in radians, and pitch rate in rad/s. This function intentionally does
+    not know whether the wheel is left or right. Both wheels use the same gain
+    vector; the mirrored USD joint sign is applied only by
+    compute_split_4_state_lqr_currents().
+    """
+    state = np.array(
+        [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s],
         dtype=float,
     )
-    b_mat = np.array([[0.0], [b2], [0.0], [b4]], dtype=float)
-    return a, b_mat
+    return float(-(K_SPLIT_4_STATE_LQR_CURRENT @ state))
 
 
-def calculate_lqr_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return 4-state A, B, force gains, and equal-wheel current gains."""
-    a, b = build_pitch_model(params)
-    q = np.diag([weights.q_position, weights.q_wheel_velocity, weights.q_pitch, weights.q_pitch_rate])
-    r = np.array([[weights.r_force]], dtype=float)
-    p = solve_continuous_are(a, b, q, r)
-    k_force = np.linalg.solve(r, b.T @ p).reshape(-1)
-    k_current = k_force * params.wheel_radius_m / (2.0 * params.wheel_torque_constant_nm_per_a)
-    return a, b, k_force, k_current
+def compute_split_4_state_lqr_currents(
+    state: RobotState,
+    pitch_rad: float,
+    pitch_rate_rad_s: float,
+) -> tuple[float, float]:
+    """Return left/right current commands from mirrored split 4-state LQR.
 
-
-def calculate_lqr6_gains(params: LqrPhysicalParams, weights: LqrWeights) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return coupled 6-state, 2-current LQR matrices and gain K6."""
-    if LQR_CURRENT_SIGN not in (-1.0, 1.0):
-        raise ValueError("LQR_CURRENT_SIGN must be -1.0 or +1.0.")
-    if LQR_YAW_SIGN not in (-1.0, 1.0):
-        raise ValueError("LQR_YAW_SIGN must be -1.0 or +1.0.")
-
-    a4, b_force = build_pitch_model(params)
-    a6 = np.zeros((6, 6), dtype=float)
-    b6 = np.zeros((6, 2), dtype=float)
-    a6[0:4, 0:4] = a4
-
-    force_per_current = params.wheel_torque_constant_nm_per_a / params.wheel_radius_m
-    pitch_per_current = LQR_CURRENT_SIGN * b_force[:, 0] * force_per_current
-    b6[0:4, 0] = pitch_per_current
-    b6[0:4, 1] = pitch_per_current
-
-    a6[4, 5] = 1.0
-    yaw_gain = params.track_width_m * params.wheel_torque_constant_nm_per_a / (
-        2.0 * params.wheel_radius_m * params.body_yaw_inertia_kg_m2
+    The controller uses physical forward-positive per-wheel path/velocity
+    errors, not average wheel position, average wheel velocity, yaw, or yaw
+    rate. Yaw/path correction can emerge from the two independent wheel
+    path/velocity states. The environment applies the left USD joint mirror when
+    these physical currents are converted to joint efforts.
+    """
+    left_physical_current = compute_single_wheel_4_state_lqr_current(
+        state.wheel_position_rad[0] * R_WHEEL,
+        state.wheel_velocity_rad_s[0] * R_WHEEL,
+        pitch_rad,
+        pitch_rate_rad_s,
     )
-    b6[5, 0] = -LQR_YAW_SIGN * yaw_gain
-    b6[5, 1] = LQR_YAW_SIGN * yaw_gain
-
-    q6 = np.diag([
-        weights.q_position,
-        weights.q_wheel_velocity,
-        weights.q_pitch,
-        weights.q_pitch_rate,
-        weights.q_yaw,
-        weights.q_yaw_rate,
-    ])
-    r6 = np.diag([weights.r_left_current, weights.r_right_current])
-    p = solve_continuous_are(a6, b6, q6, r6)
-    k6 = np.linalg.solve(r6, b6.T @ p)
-    return a6, b6, k6
+    right_physical_current = compute_single_wheel_4_state_lqr_current(
+        state.wheel_position_rad[1] * R_WHEEL,
+        state.wheel_velocity_rad_s[1] * R_WHEEL,
+        pitch_rad,
+        pitch_rate_rad_s,
+    )
+    return (
+        LEFT_MIRRORED_WHEEL_CURRENT_SIGN * left_physical_current,
+        RIGHT_MIRRORED_WHEEL_CURRENT_SIGN * right_physical_current,
+    )
 
 
-def selected_current_gains() -> np.ndarray:
-    if LQR_CURRENT_SIGN not in (-1.0, 1.0):
-        raise ValueError("LQR_CURRENT_SIGN must be -1.0 or +1.0.")
-    if GAIN_MODE == "auto_lqr":
-        gains = K_CURRENT_LQR
-    elif GAIN_MODE == "manual_current":
-        gains = np.array(
-            [K_WHEEL_POSITION_CURRENT, K_WHEEL_VELOCITY_CURRENT, K_PITCH_CURRENT, K_PITCH_RATE_CURRENT],
-            dtype=float,
-        )
-    else:
-        raise ValueError("GAIN_MODE must be 'auto_lqr' or 'manual_current'.")
-    return LQR_CURRENT_SIGN * gains
-
-
-def selected_wheel_currents(lqr_state4: np.ndarray, lqr_state6: np.ndarray) -> tuple[float, float]:
-    if LQR_STATE_MODE == "lqr4":
-        i_des = float(-(selected_current_gains() @ lqr_state4))
-        return i_des, i_des
-    if LQR_STATE_MODE == "lqr6":
-        currents = -(K6_LQR @ lqr_state6)
-        return float(currents[0]), float(currents[1])
-    raise ValueError("LQR_STATE_MODE must be 'lqr4' or 'lqr6'.")
-
-
-A_LQR, B_LQR, K_FORCE_LQR, K_CURRENT_LQR = calculate_lqr_gains(LQR_PHYSICAL_PARAMS, LQR_WEIGHTS)
-A6_LQR, B6_LQR, K6_LQR = calculate_lqr6_gains(LQR_PHYSICAL_PARAMS, LQR_WEIGHTS)
-YAW_REFERENCE_RAD = 0.0
+def compute_split_4_state_lqr_currents_for_values(
+    left_wheel_position_m: float = 0.0,
+    left_wheel_velocity_m_s: float = 0.0,
+    right_wheel_position_m: float = 0.0,
+    right_wheel_velocity_m_s: float = 0.0,
+    pitch_rad: float = 0.0,
+    pitch_rate_rad_s: float = 0.0,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return physical and mirrored command currents for diagnostic values."""
+    left_physical = compute_single_wheel_4_state_lqr_current(
+        left_wheel_position_m, left_wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s
+    )
+    right_physical = compute_single_wheel_4_state_lqr_current(
+        right_wheel_position_m, right_wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s
+    )
+    commanded = (
+        LEFT_MIRRORED_WHEEL_CURRENT_SIGN * left_physical,
+        RIGHT_MIRRORED_WHEEL_CURRENT_SIGN * right_physical,
+    )
+    return (left_physical, right_physical), commanded
 
 
 @dataclass(frozen=True)
@@ -396,6 +355,10 @@ PREVIOUS_RL_CURRENT_A = [0.0, 0.0]
 RESIDUAL_EPISODE_REWARD = 0.0
 
 
+# =============================================================================
+# RESIDUAL POLICY LOADING
+# =============================================================================
+
 def load_residual_policy() -> torch.jit.ScriptModule | torch.nn.Module | None:
     """Load a frozen TorchScript residual policy on first use."""
     global RESIDUAL_POLICY
@@ -430,7 +393,12 @@ def residual_observation(
     base_position: float,
     base_velocity: float,
 ) -> torch.Tensor:
-    """Build the 8D residual PPO observation from existing controller state."""
+    """Build the 8D residual PPO observation for frozen-policy evaluation.
+
+    Units and order must match residual_lqr_env.py::_get_observations(): pitch
+    rad, pitch rate rad/s, base position m, base velocity m/s, normalized wheel
+    velocities, and previous residual currents normalized by the residual limit.
+    """
     return torch.tensor(
         [
             theta,
@@ -453,7 +421,12 @@ def residual_current_from_policy(
     base_position: float,
     base_velocity: float,
 ) -> tuple[float, float]:
-    """Return bounded residual current in amperes; zero if disabled/no policy."""
+    """Return bounded residual current in amperes.
+
+    The TorchScript policy action is clamped to [-1, 1] and scaled by
+    --residual-action-limit. This mirrors residual_lqr_env.py action scaling for
+    frozen-policy evaluation.
+    """
     if not args_cli.enable_residual_rl:
         return (0.0, 0.0)
     policy = load_residual_policy()
@@ -476,11 +449,20 @@ def residual_reward(theta: float, theta_dot: float, position: float, rl_current:
     )
 
 
+# =============================================================================
+# DISTURBANCE GENERATION
+# =============================================================================
+
 # ---------------------------------------------------------------------------
 # USER CONTROL SECTION
 # ---------------------------------------------------------------------------
 def actuator_disturbance_current(control_sample: int) -> tuple[bool, tuple[float, float], int]:
-    """Return whether the deterministic actuator disturbance is active this sample."""
+    """Return deterministic actuator-current disturbance for one control sample.
+
+    The returned current is in amperes and is added after LQR and residual
+    currents. Sweep scripts reach pulse/step behavior indirectly through this
+    function.
+    """
     if args_cli.actuator_disturbance == "none":
         return False, (0.0, 0.0), -1
     if args_cli.test_mode != "lqr-floor":
@@ -492,12 +474,29 @@ def actuator_disturbance_current(control_sample: int) -> tuple[bool, tuple[float
         return False, (0.0, 0.0), -1
     magnitude = args_cli.actuator_disturbance_current_a
     if args_cli.actuator_disturbance in ("physical-forward", "step-forward"):
-        return True, (magnitude, -magnitude), control_sample - start
+        # Currents are physical forward-positive here. StandupEnv applies the
+        # left USD joint-axis mirror when converting current to joint effort, so
+        # a forward actuator disturbance uses the same sign on both wheels.
+        return True, (magnitude, magnitude), control_sample - start
     raise ValueError(f"Unsupported actuator disturbance '{args_cli.actuator_disturbance}'.")
 
 
+# =============================================================================
+# ACTION COMPUTATION
+# =============================================================================
+
 def compute_action(state: RobotState, control_sample: int) -> RobotAction:
-    """Return physical wheel-current commands for the selected diagnostic."""
+    """Return physical joint/current commands for the selected diagnostic.
+
+    Args:
+        state: Robot state in physical units from read_state().
+        control_sample: Integer controller sample index at the environment
+            control rate.
+
+    Returns:
+        RobotAction with CyberGear target angles in radians and left/right wheel
+        current commands in amperes.
+    """
     global RESIDUAL_EPISODE_REWARD
     lqr_current = (0.0, 0.0)
     rl_current = (0.0, 0.0)
@@ -517,26 +516,32 @@ def compute_action(state: RobotState, control_sample: int) -> RobotAction:
             theta = math.radians(args_cli.artificial_pitch_deg)
             theta_dot = 0.0
             wheel_position_m = 0.0
-            wheel_velocity_m_s = 0.0
+            _physical_current, lqr_current = compute_split_4_state_lqr_currents_for_values(
+                pitch_rad=LQR_PITCH_SENSOR_SIGN * theta,
+                pitch_rate_rad_s=LQR_PITCH_SENSOR_SIGN * theta_dot,
+            )
         else:
             theta = pitch_from_projected_gravity(state.projected_gravity_body)
             theta_dot = -state.angular_velocity_body_rad_s[0]
             wheel_position_m = 0.5 * sum(state.wheel_position_rad) * R_WHEEL
-            wheel_velocity_m_s = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
-        yaw = wrap_angle_rad(yaw_from_quat_wxyz(state.root_orientation_world_quat_wxyz) - YAW_REFERENCE_RAD)
-        yaw_rate = state.angular_velocity_world_rad_s[2]
-        lqr_state4 = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot], dtype=float)
-        lqr_state6 = np.array([wheel_position_m, wheel_velocity_m_s, theta, theta_dot, yaw, yaw_rate], dtype=float)
-        lqr_current = (0.0, 0.0) if args_cli.floor_motors_disabled else selected_wheel_currents(lqr_state4, lqr_state6)
-        rl_current = residual_current_from_policy(state, theta, theta_dot, wheel_position_m, wheel_velocity_m_s)
-        rl_current = (
-            max(-args_cli.residual_action_limit, min(args_cli.residual_action_limit, rl_current[0])),
-            max(-args_cli.residual_action_limit, min(args_cli.residual_action_limit, rl_current[1])),
-        )
+            lqr_current = (
+                (0.0, 0.0)
+                if args_cli.floor_motors_disabled
+                else compute_split_4_state_lqr_currents(
+                    state,
+                    LQR_PITCH_SENSOR_SIGN * theta,
+                    LQR_PITCH_SENSOR_SIGN * theta_dot,
+                )
+            )
+
+        # Residual RL is intentionally disabled in this split 4-state LQR path.
+        # The diagnostic CLI flags remain accepted, but they do not alter LQR
+        # current commands for this controller.
+        rl_current = (0.0, 0.0)
         disturbance_active, disturbance_current, disturbance_active_sample = actuator_disturbance_current(control_sample)
         wheel_current = (
-            lqr_current[0] + rl_current[0] + disturbance_current[0],
-            lqr_current[1] + rl_current[1] + disturbance_current[1],
+            lqr_current[0] + disturbance_current[0],
+            lqr_current[1] + disturbance_current[1],
         )
         reward = residual_reward(theta, theta_dot, wheel_position_m, rl_current)
         RESIDUAL_EPISODE_REWARD += reward
@@ -585,58 +590,81 @@ def wrap_angle_rad(value: float) -> float:
     return math.atan2(math.sin(value), math.cos(value))
 
 
-def selected_currents_for_synthetic_state(pitch_deg: float = 0.0, yaw_deg: float = 0.0) -> tuple[float, float]:
-    """Return selected currents for zero-rate artificial pitch/yaw tests."""
-    state4 = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0], dtype=float)
-    state6 = np.array([0.0, 0.0, math.radians(pitch_deg), 0.0, math.radians(yaw_deg), 0.0], dtype=float)
-    return selected_wheel_currents(state4, state6)
+def split_4_state_currents_for_synthetic_pitch(pitch_deg: float) -> tuple[float, float]:
+    """Return max command currents for a zero-path synthetic pitch test."""
+    _physical, commanded = compute_split_4_state_lqr_currents_for_values(
+        pitch_rad=LQR_PITCH_SENSOR_SIGN * math.radians(pitch_deg),
+        pitch_rate_rad_s=0.0,
+    )
+    return commanded
 
 
 def lqr_current_for_pitch_deg(pitch_deg: float) -> float:
-    """Return the max selected zero-rate, zero-position current command."""
-    left_current, right_current = selected_currents_for_synthetic_state(pitch_deg=pitch_deg)
+    """Return the max split 4-state command current for synthetic pitch."""
+    left_current, right_current = split_4_state_currents_for_synthetic_pitch(pitch_deg)
     return max(abs(left_current), abs(right_current))
 
 
 def print_lqr_diagnostic() -> None:
-    """Print selected gain source and pitch/yaw sign tests."""
+    """Print split 4-state LQR configuration and basic sign diagnostics."""
     params = LQR_PHYSICAL_PARAMS
-    print(f"[LQR]: LQR_STATE_MODE={LQR_STATE_MODE}")
-    print(f"[LQR]: GAIN_MODE={GAIN_MODE}")
-    print(f"[LQR]: LQR_CURRENT_SIGN={LQR_CURRENT_SIGN:+.1f}")
-    print(f"[LQR]: LQR_YAW_SIGN={LQR_YAW_SIGN:+.1f}")
-    print("[LQR4]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]")
-    print("[LQR6]: state order = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s, yaw_rad, yaw_rate_rad_s]")
-    print("[LQR]: physical parameters:")
+    print("[LQR]: controller=split 4-state LQR")
+    print("[LQR]: state per wheel = [wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]")
+    print("[LQR]: yaw is diagnostic only and is not a controller state")
+    print("[LQR]: K_SPLIT_4_STATE_LQR_CURRENT =", K_SPLIT_4_STATE_LQR_CURRENT)
+    print(f"[LQR]: left current sign into StandupEnv={LEFT_MIRRORED_WHEEL_CURRENT_SIGN:+.1f}")
+    print(f"[LQR]: right current sign into StandupEnv={RIGHT_MIRRORED_WHEEL_CURRENT_SIGN:+.1f}")
+    print(f"[LQR]: LQR_PITCH_SENSOR_SIGN={LQR_PITCH_SENSOR_SIGN:+.1f}")
+    print("[LQR]: StandupEnv applies the left USD joint mirror when converting current to effort")
+    print("[LQR]: physical parameters retained for diagnostics/unit conversion:")
     print(f"  body_mass_kg={params.body_mass_kg:.6g}")
     print(f"  wheel_cart_mass_kg={params.wheel_cart_mass_kg:.6g}")
     print(f"  wheel_radius_m={params.wheel_radius_m:.6g}")
     print(f"  body_com_height_m={params.body_com_height_m:.6g}")
     print(f"  body_pitch_inertia_kg_m2={params.body_pitch_inertia_kg_m2:.12g}")
     print(f"  wheel_torque_constant_nm_per_a={params.wheel_torque_constant_nm_per_a:.6g}")
-    print(f"  track_width_m={params.track_width_m:.12g}")
-    print(f"  body_yaw_inertia_kg_m2={params.body_yaw_inertia_kg_m2:.12g}")
-    print("[LQR4]: A4 =", A_LQR)
-    print("[LQR4]: B_force =", B_LQR)
-    print("[LQR4]: K_force for forward force N = -K_force @ state:", K_FORCE_LQR)
-    print("[LQR4]: K_current equal wheel A = -K_current @ state:", K_CURRENT_LQR)
-    print("[LQR4]: selected K_current equal wheel A = -K_selected @ state:", selected_current_gains())
-    print("[LQR6]: A6 =", A6_LQR)
-    print("[LQR6]: B6 =", B6_LQR)
-    print("[LQR6]: K6 for wheel currents A = -K6 @ state:", K6_LQR)
-    pitch_left, pitch_right = selected_currents_for_synthetic_state(pitch_deg=1.0, yaw_deg=0.0)
-    yaw_left, yaw_right = selected_currents_for_synthetic_state(pitch_deg=0.0, yaw_deg=1.0)
-    print(f"[SIGN TEST] selected pitch=+1.0 deg yaw=0 -> i_left={pitch_left:+.6f} A  i_right={pitch_right:+.6f} A")
-    print(f"[SIGN TEST] selected pitch=0 yaw=+1.0 deg -> i_left={yaw_left:+.6f} A  i_right={yaw_right:+.6f} A")
-    if pitch_left == 0.0 or pitch_right == 0.0 or pitch_left * pitch_right <= 0.0:
-        raise RuntimeError("LQR pitch sign test failed: pitch should produce same-sign nonzero wheel currents.")
-    if LQR_STATE_MODE == "lqr6":
-        if yaw_left == 0.0 or yaw_right == 0.0 or yaw_left * yaw_right >= 0.0:
-            raise RuntimeError("LQR yaw sign test failed: yaw should produce opposite-sign nonzero wheel currents.")
-        print("[SIGN TEST] PASS: pitch uses common-mode current and yaw uses differential current.")
-    else:
-        print("[SIGN TEST] PASS: lqr4 pitch common-mode test passed; yaw separation is only active in lqr6 mode.")
+    print(f"  track_width_m={params.track_width_m:.12g}  # logged/diagnostic only")
+    print(f"  body_yaw_inertia_kg_m2={params.body_yaw_inertia_kg_m2:.12g}  # logged/diagnostic only")
 
+    pitch_physical, pitch_commanded = compute_split_4_state_lqr_currents_for_values(
+        pitch_rad=LQR_PITCH_SENSOR_SIGN * math.radians(1.0),
+        pitch_rate_rad_s=0.0,
+    )
+    print(
+        "[SIGN TEST] pitch=+1.0 deg physical before mirror -> "
+        f"left={pitch_physical[0]:+.6f} A right={pitch_physical[1]:+.6f} A"
+    )
+    print(
+        "[SIGN TEST] pitch=+1.0 deg current sent to StandupEnv -> "
+        f"left={pitch_commanded[0]:+.6f} A right={pitch_commanded[1]:+.6f} A"
+    )
+    if abs(pitch_physical[0]) < 1.0e-12 or abs(pitch_physical[1]) < 1.0e-12:
+        print("[SIGN TEST] WARNING: pitch-only physical currents are near zero.")
+    if not math.isclose(pitch_physical[0], pitch_physical[1], rel_tol=1.0e-9, abs_tol=1.0e-12):
+        print("[SIGN TEST] WARNING: pitch-only physical currents are not equal.")
+
+    path_physical, path_commanded = compute_split_4_state_lqr_currents_for_values(
+        left_wheel_position_m=0.01,
+        right_wheel_position_m=0.0,
+        pitch_rad=0.0,
+        pitch_rate_rad_s=0.0,
+    )
+    print(
+        "[PATH TEST] left path=+0.01 m, right path=0 physical before mirror -> "
+        f"left={path_physical[0]:+.6f} A right={path_physical[1]:+.6f} A"
+    )
+    print(
+        "[PATH TEST] left path=+0.01 m, right path=0 current sent to StandupEnv -> "
+        f"left={path_commanded[0]:+.6f} A right={path_commanded[1]:+.6f} A"
+    )
+    if math.isclose(path_physical[0], path_physical[1], rel_tol=1.0e-9, abs_tol=1.0e-12):
+        print("[PATH TEST] NOTE: physical currents are equal because K_POSITION_CURRENT is currently zero.")
+        print("[PATH TEST] Nonzero K_POSITION_CURRENT would let split wheel path errors create differential correction.")
+
+
+# =============================================================================
+# STATE READING
+# =============================================================================
 
 def read_state(env: Any, time_s: float) -> RobotState:
     """Read env_0 and convert the mirrored left wheel axis to forward-positive."""
@@ -767,11 +795,18 @@ def apply_disturbance(env: Any, time_s: float) -> None:
 
 
 def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], contact_forces: tuple[float, float]) -> dict[str, float]:
-    """Flatten state and action into named CSV/plot signals."""
+    """Flatten state/action/motor debug values into CSV metric columns.
+
+    Column names are consumed by sweep, repeatability, step-benchmark, and plot
+    scripts. Add aliases instead of renaming existing columns unless all
+    downstream readers are updated together.
+    """
     theta = pitch_from_projected_gravity(state.projected_gravity_body)
     theta_dot = -state.angular_velocity_body_rad_s[0]
     position = 0.5 * sum(state.wheel_position_rad) * R_WHEEL
     velocity = 0.5 * sum(state.wheel_velocity_rad_s) * R_WHEEL
+    # Yaw is logged as a diagnostic only. It is not a state in the split
+    # 4-state LQR controller used by compute_action().
     base_yaw = yaw_from_quat_wxyz(state.root_orientation_world_quat_wxyz)
     base_yaw_rate = state.angular_velocity_world_rad_s[2]
     yaw = wrap_angle_rad(base_yaw - YAW_REFERENCE_RAD)
@@ -915,6 +950,10 @@ def resolve_plot_signals(value: str) -> list[str]:
     return resolved
 
 
+# =============================================================================
+# CSV LOGGING
+# =============================================================================
+
 class CsvLogger:
     def __init__(self, path_value: str):
         self._file = self._writer = None
@@ -936,6 +975,10 @@ class CsvLogger:
         if self._file is not None:
             self._file.close()
 
+
+# =============================================================================
+# LIVE PLOTTING
+# =============================================================================
 
 class LivePlot:
     """Matplotlib window with one clearly titled subplot per selected signal."""
@@ -1023,6 +1066,10 @@ def create_base_hold_joint(base_height: float) -> None:
     joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
 
+# =============================================================================
+# MAIN LOOP
+# =============================================================================
+
 @hydra_task_config(args_cli.task, None)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _agent_cfg: Any | None):
     if args_cli.list_signals:
@@ -1052,11 +1099,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
     if args_cli.test_mode in ("lqr-model", "lqr-floor"):
         print_lqr_diagnostic()
     if args_cli.enable_residual_rl:
-        mode = "training" if args_cli.training_mode else "evaluation" if args_cli.evaluation_mode else "enabled"
-        source = args_cli.residual_policy or "zero residual policy"
         print(
-            f"[RESIDUAL RL]: mode={mode} limit={args_cli.residual_action_limit:.3f} A "
-            f"policy={source}. LQR remains active."
+            "[RESIDUAL RL]: ignored for scripts/lqr_control.py split 4-state LQR diagnostics. "
+            "Residual current is forced to zero; LQR plus actuator disturbance remains active."
         )
     signals = [] if args_cli.no_plot else resolve_plot_signals(args_cli.plot_signals)
     env_cfg.scene.num_envs = 1
@@ -1148,7 +1193,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
             f"samples={max(0, ACTUATOR_COMMAND_DEBUG.stop_sample_index - ACTUATOR_COMMAND_DEBUG.start_sample_index)} "
             f"duration={max(0, ACTUATOR_COMMAND_DEBUG.stop_sample_index - ACTUATOR_COMMAND_DEBUG.start_sample_index) * dt:.6f} s "
             f"physical_forward={args_cli.actuator_disturbance_current_a:+.6f} A "
-            f"mapping left={args_cli.actuator_disturbance_current_a:+.6f} A right={-args_cli.actuator_disturbance_current_a:+.6f} A"
+            f"mapping left={args_cli.actuator_disturbance_current_a:+.6f} A right={args_cli.actuator_disturbance_current_a:+.6f} A"
         )
 
     timestep, wall_start = 0, time.time()

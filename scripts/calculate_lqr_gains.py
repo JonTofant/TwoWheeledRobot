@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Calculate editable LQR gains for scripts/lqr_control.py.
+"""
+Calculate editable 4-state LQR gains for the diagnostic controller.
+
+Purpose:
+    Print force, torque, current, and normalized action gains for the simple
+    pitch model used as a reference by scripts/lqr_control.py.
+
+Edit here when:
+    You want to experiment with the 4-state pitch-model parameters or weights
+    before copying gains into the diagnostic script.
+
+Avoid changing here without also checking:
+    scripts/lqr_control.py and residual_lqr_env.py, which currently duplicate
+    related physical parameters and LQR logic.
 
 This script uses a small linear inverted-pendulum-on-wheels model for the
 current LQR tuning setup where the CyberGear joints are held fixed.

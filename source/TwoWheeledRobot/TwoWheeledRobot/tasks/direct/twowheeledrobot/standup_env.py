@@ -1,5 +1,23 @@
 """
-Standup RL Environment for the Two-Wheeled Leg Robot.
+Standup Isaac Lab environment for the two-wheeled robot.
+
+Purpose:
+    Train a compact policy that self-rights the robot from fallen poses using
+    four CyberGear leg targets and two DDSM115 wheel-current commands.
+
+Main responsibilities:
+    - Set up the robot, IMU, optional wheel contacts, and flat ground.
+    - Convert normalized actions into CyberGear targets and DDSM115 currents.
+    - Apply the inline DDSM115 current/torque/speed motor model.
+    - Build the 18-value standup observation vector.
+    - Compute standup reward, reset fallen poses, and detect success/timeouts.
+
+Important consistency requirements:
+    - DDSM115 motor logic must stay consistent with residual_lqr_env.py until
+      it is extracted into a shared motor model.
+    - Standup observation order should stay consistent with
+      scripts/uart_policy_runner.py for exported policy deployment.
+    - Reward weights in standup_env_cfg.py are consumed directly here.
 
 The policy learns to self-right from any fallen position to the upright
 balancing stance.  Unlike the walk/drive environments this task:
@@ -44,6 +62,10 @@ from .sim_params import (
     WHEEL_INTERNAL_DAMPING,
 )
 
+
+# =============================================================================
+# INITIALIZATION
+# =============================================================================
 
 class StandupEnv(DirectRLEnv):
     cfg: StandupEnvCfg
@@ -202,7 +224,9 @@ class StandupEnv(DirectRLEnv):
         )
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel)
 
-    # ── Scene ─────────────────────────────────────────────────────────────────
+    # =============================================================================
+    # SCENE SETUP
+    # =============================================================================
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -238,9 +262,23 @@ class StandupEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.8, 0.8, 0.8))
         light_cfg.func("/World/Light", light_cfg)
 
-    # ── Control step ──────────────────────────────────────────────────────────
+    # =============================================================================
+    # ACTION PROCESSING AND DDSM115 MOTOR MODEL
+    # =============================================================================
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        """Convert normalized policy actions into Isaac joint targets.
+
+        Args:
+            actions: Tensor with shape (num_envs, 6). Values are expected in
+                [-1, 1]. The first four values command CyberGear joint targets;
+                the last two command left/right DDSM115 wheel current.
+
+        The DDSM115 current clamp and torque-speed limiter here must stay
+        behaviorally identical to residual_lqr_env.py until a shared motor
+        model is extracted. The left wheel effort is negated only because the
+        USD joint axis is mirrored.
+        """
         actions = actions.clamp(-1.0, 1.0)
         self._enforce_cybergear_joint_state_limits()
 
@@ -254,6 +292,9 @@ class StandupEnv(DirectRLEnv):
         cg_targets = self._cg_joint_lo + act01 * (self._cg_joint_hi - self._cg_joint_lo)
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
+        # ---------------------------------------------------------------------
+        # DDSM115 MOTOR MODEL
+        # ---------------------------------------------------------------------
         # ── DDSM115 current/torque motor model ────────────────────────────────
         # Policy actions request current. Convert to torque, then apply the
         # short-term peak and linear torque-speed envelope. Positive values are
@@ -279,9 +320,17 @@ class StandupEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         self.robot.write_data_to_sim()
 
-    # ── Observations ──────────────────────────────────────────────────────────
+    # =============================================================================
+    # OBSERVATION CONSTRUCTION
+    # =============================================================================
 
     def _get_observations(self) -> dict:
+        """Build the 18-value standup policy observation.
+
+        The observation order is documented in standup_env_cfg.py and mirrored
+        by scripts/uart_policy_runner.py for hardware deployment. Change the
+        order only with a coordinated policy/export/deployment update.
+        """
         self._enforce_cybergear_joint_state_limits()
 
         proj_grav = self.bno080.data.projected_gravity_b   # (N, 3)
@@ -330,9 +379,17 @@ class StandupEnv(DirectRLEnv):
             ).clamp(-10.0, 10.0)
         }
 
-    # ── Rewards ───────────────────────────────────────────────────────────────
+    # =============================================================================
+    # REWARD CALCULATION
+    # =============================================================================
 
     def _get_rewards(self) -> torch.Tensor:
+        """Compute standup reward terms for self-righting and final posture.
+
+        Reward weights mostly come from standup_env_cfg.py. If formulas change,
+        update the developer docs and compare learning behavior against older
+        runs because this is the main standup training objective.
+        """
         proj_grav = torch.nan_to_num(
             self.bno080.data.projected_gravity_b,
             nan=0.0, posinf=1.0, neginf=-1.0,
@@ -444,9 +501,16 @@ class StandupEnv(DirectRLEnv):
 
         return torch.nan_to_num(total, nan=0.0, posinf=2.0, neginf=-10.0).clamp(-10.0, 2.0)
 
-    # ── Termination ───────────────────────────────────────────────────────────
+    # =============================================================================
+    # TERMINATION LOGIC
+    # =============================================================================
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return termination and timeout flags for each environment.
+
+        Standup episodes terminate on success or broken physics, not ordinary
+        fallen poses, because the task intentionally starts from fallen poses.
+        """
         self._enforce_cybergear_joint_state_limits()
 
         # Success: robot has been upright for the required number of steps.
@@ -464,9 +528,17 @@ class StandupEnv(DirectRLEnv):
 
         return terminated, timeout
 
-    # ── Reset ─────────────────────────────────────────────────────────────────
+    # =============================================================================
+    # RESET LOGIC
+    # =============================================================================
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
+        """Reset selected environments into sampled fallen poses.
+
+        This clears action/motor/reward buffers, writes root and joint state to
+        simulation, applies joint-gain/domain-randomization settings, and stores
+        spawn XY for the displacement reward.
+        """
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
@@ -570,7 +642,9 @@ class StandupEnv(DirectRLEnv):
             env_ids=env_ids_cpu,
         )
 
-    # ── Fallen pose sampler ───────────────────────────────────────────────────
+    # =============================================================================
+    # DEBUG HELPERS AND FALLEN POSE SAMPLING
+    # =============================================================================
 
     def _sample_fallen_poses(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample fallen spawn orientations for `n` environments.

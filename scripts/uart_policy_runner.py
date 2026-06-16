@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Run the exported stand-up policy against a robot over UART.
+"""
+Run an exported standup policy against hardware over UART.
+
+Purpose:
+    Convert STM32 JSON telemetry into the same observation layout used by
+    StandupEnv, run an exported TorchScript policy, and send CyberGear targets
+    plus DDSM115 current commands back over serial.
+
+Edit here when:
+    Hardware packet fields, angle units, deployment normalization, or safe-error
+    behavior changes.
+
+Avoid changing here without also checking:
+    standup_env.py::_get_observations(), standup_env_cfg.py action scaling, and
+    STM32_DEPLOYMENT.md.
 
 STM32 -> host, one JSON object per line:
     {

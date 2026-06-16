@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Run LQR vs residual-PPO step actuator-disturbance benchmark."""
+"""
+Run step actuator-disturbance benchmarks for LQR and residual PPO.
+
+Purpose:
+    Call scripts/lqr_control.py with step-forward current disturbances, then
+    summarize during-step, after-step, pitch, and current-effort metrics.
+
+Edit here when:
+    You want to change step duration/start/current defaults or the benchmark
+    summary metrics.
+
+Avoid changing here without also checking:
+    scripts/lqr_control.py::actuator_disturbance_current(), CSV column names in
+    sample_to_row(), and plotting scripts that read the benchmark summaries.
+"""
 
 from __future__ import annotations
 

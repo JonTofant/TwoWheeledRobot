@@ -1,10 +1,19 @@
 """
-Simulation world parameters — physics fidelity and robot imperfections.
-=======================================================================
+Shared simulation and actuator constants for the two-wheeled robot.
 
-Edit this file to introduce realistic imperfections without touching the
-controller or the USD asset.  Useful for testing robustness before
-deploying to the real robot.
+Purpose:
+    Keep Isaac physics timing, ground contact, damping, solver, CyberGear,
+    and DDSM115 constants in one importable Python module.
+
+Edit here when:
+    You need to change global simulation fidelity, ground friction, solver
+    settings, or DDSM115/CyberGear constants used by the Isaac environments.
+
+Avoid changing here without also checking:
+    LQR physical parameters in residual_lqr_env.py, scripts/lqr_control.py,
+    scripts/calculate_lqr_gains.py, and hardware scaling in
+    scripts/uart_policy_runner.py.
+
 
 Timing
 ------

@@ -119,7 +119,7 @@ python scripts/lqr_control.py --task Template-Twowheeledrobot-Standup-v0 --test-
 
 - Required arguments: none strictly; defaults to task `Template-Twowheeledrobot-Standup-v0`, one env, and `free-spin`.
 - Optional important arguments: `--test-mode {free-spin,lqr-model,lqr-floor}`, `--motor-test-current`, `--left-motor-test-current`, `--right-motor-test-current`, `--floor-initial-pitch-deg`, `--floor-motors-disabled`, `--max-test-time-s`, `--disturbance`, `--actuator-disturbance`, `--enable-residual-rl`, `--residual-policy`, `--residual-action-limit`, `--log-csv`, `--no-plot`, `--list-signals`.
-- Main calls/classes/functions: `LqrPhysicalParams`, `LqrWeights`, `calculate_lqr_gains`, `calculate_lqr6_gains`, `compute_action`, `residual_current_from_policy`, `actuator_disturbance_current`, `disturbance_wrench`, `CsvLogger`, `LivePlot`, `sample_to_row`.
+- Main calls/classes/functions: `LqrPhysicalParams`, `compute_single_wheel_4_state_lqr_current`, `compute_split_4_state_lqr_currents`, `compute_action`, `actuator_disturbance_current`, `disturbance_wrench`, `CsvLogger`, `LivePlot`, `sample_to_row`.
 
 ### `scripts/calculate_lqr_gains.py`
 
@@ -363,17 +363,15 @@ LQR exists in multiple places.
 ### Diagnostic and Evaluation LQR
 
 - File: `scripts/lqr_control.py`.
-- 4-state option: `LQR_STATE_MODE = "lqr4"` uses `[wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]` and equal wheel currents.
-- 6-state option: `LQR_STATE_MODE = "lqr6"` uses `[wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s, yaw_rad, yaw_rate_rad_s]` and independent left/right currents.
-- Current setting: currently `LQR_STATE_MODE = "lqr6"`.
-- Gain modes for 4-state: `GAIN_MODE = "auto_lqr"` or `manual_current`; currently `manual_current`.
-- Manual 4-state current gains:
-  - `K_WHEEL_POSITION_CURRENT = 0.0`
-  - `K_WHEEL_VELOCITY_CURRENT = 0.474502`
+- Controller: one split 4-state LQR design with two independent wheel controllers.
+- Per-wheel state: `[wheel_position_m, wheel_velocity_m_s, pitch_rad, pitch_rate_rad_s]`.
+- Yaw is not a controller state in this script; it is logged only as a diagnostic.
+- Shared current gain vector:
+  - `K_POSITION_CURRENT = 0.0`
+  - `K_VELOCITY_CURRENT = 0.474502`
   - `K_PITCH_CURRENT = 3.21126`
   - `K_PITCH_RATE_CURRENT = 0.327822`
-  - roll gains are exposed but unused.
-- 6-state gains are calculated from hardcoded physical parameters and weights in the script.
+- Left/right USD wheel-joint mirroring is applied only at the current output with `LEFT_MIRRORED_WHEEL_CURRENT_SIGN = -1.0` and `RIGHT_MIRRORED_WHEEL_CURRENT_SIGN = +1.0`.
 
 ### Gain Calculation Script
 
@@ -386,8 +384,8 @@ Multiple LQR variants exist:
 
 - Suspended-air diagnostic (`lqr-model`).
 - Floor-contact LQR balancing (`lqr-floor`).
-- 4-state pitch-only LQR in `scripts/lqr_control.py`.
-- 6-state pitch+yaw LQR in `scripts/lqr_control.py` and `residual_lqr_env.py`.
+- Split per-wheel 4-state LQR in `scripts/lqr_control.py`.
+- 6-state pitch+yaw LQR remains in `residual_lqr_env.py` for residual training.
 - Standalone 4-state gain printer in `scripts/calculate_lqr_gains.py`.
 
 ## 7. Residual RL Controller

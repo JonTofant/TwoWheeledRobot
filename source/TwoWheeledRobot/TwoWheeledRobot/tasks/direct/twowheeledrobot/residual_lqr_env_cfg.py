@@ -1,5 +1,17 @@
 """Residual PPO-on-LQR balancing task configuration.
 
+Purpose:
+    Override the standup task into a near-upright floor-balancing residual RL
+    task where PPO learns bounded current corrections on top of LQR.
+
+Edit here when:
+    You want to change residual action limits, residual observation/action
+    sizes, episode pitch limits, or residual-training disturbance distribution.
+
+Avoid changing here without also checking:
+    residual_lqr_env.py observation, reward, reset, and disturbance logic, plus
+    scripts/lqr_control.py frozen-policy evaluation.
+
 This task keeps the analytical LQR wheel-current controller fully active and
 lets PPO learn only a small two-current residual:
 

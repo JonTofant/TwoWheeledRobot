@@ -160,6 +160,14 @@ python scripts/test_policy_angle_sweep.py \
 
 This prints normalized actions, CyberGear target angles, and wheel current commands for upright, side-fallen, forward/back-fallen, and diagonal poses. Use it to catch obvious sign mistakes before trying UART on hardware.
 
+## Developer Documentation
+
+For code navigation and safe manual editing, read:
+
+- `DEVELOPER_GUIDE.md`
+- `PROJECT_STRUCTURE_AUDIT.md`
+- `ARCHITECTURE_DEPENDENCY_MAP.md`
+
 ## Tuning Notes
 
 - `standup_env_cfg.py` contains reward weights, spawn probabilities, success thresholds, and domain randomization.

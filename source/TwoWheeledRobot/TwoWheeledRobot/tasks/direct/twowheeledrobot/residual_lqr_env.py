@@ -1,4 +1,27 @@
-"""Residual PPO controller wrapped around the analytical LQR balancer."""
+"""
+Residual LQR Isaac Lab environment.
+
+Purpose:
+    Train a residual RL policy on top of a fixed LQR controller for the
+    two-wheeled balancing robot.
+
+Main responsibilities:
+    - Build residual-policy observations.
+    - Compute LQR wheel currents.
+    - Add residual RL currents.
+    - Add training disturbances.
+    - Apply the DDSM115 wheel motor model.
+    - Compute residual-learning reward.
+
+Important consistency requirements:
+    - Observation order must match scripts/lqr_control.py::residual_observation().
+    - Reward formula should match scripts/lqr_control.py::residual_reward() if
+      evaluation reward metrics are compared.
+    - LQR physical parameters should stay consistent with scripts/lqr_control.py
+      and scripts/calculate_lqr_gains.py.
+    - DDSM115 motor logic should stay consistent with standup_env.py until it is
+      extracted into a shared motor model.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +35,10 @@ from .residual_lqr_env_cfg import ResidualLqrEnvCfg
 from .sim_params import DDSM115_I_PEAK, DDSM115_KT, DDSM115_NO_LOAD_SPEED, DDSM115_TAU_PEAK
 from .standup_env import StandupEnv
 
+
+# =============================================================================
+# LQR PARAMETER DEFINITIONS
+# =============================================================================
 
 @dataclass(frozen=True)
 class LqrPhysicalParams:
@@ -152,6 +179,10 @@ def _wrap_angle_rad(value: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(value), torch.cos(value))
 
 
+# =============================================================================
+# INITIALIZATION
+# =============================================================================
+
 class ResidualLqrEnv(StandupEnv):
     cfg: ResidualLqrEnvCfg
 
@@ -175,7 +206,17 @@ class ResidualLqrEnv(StandupEnv):
             f"{self.cfg.enable_residual_rl}, residual_action_limit={self.cfg.residual_action_limit:.3f} A"
         )
 
+    # =============================================================================
+    # LQR CONTROLLER
+    # =============================================================================
+
     def _compute_lqr_current(self) -> torch.Tensor:
+        """Return LQR left/right wheel-current commands in amperes.
+
+        The 6-state vector is [wheel_position_m, wheel_velocity_m_s,
+        pitch_rad, pitch_rate_rad_s, yaw_rad, yaw_rate_rad_s]. Keep the state
+        convention and physical parameters aligned with scripts/lqr_control.py.
+        """
         proj_grav = self.bno080.data.projected_gravity_b
         raw_pos = self.robot.data.joint_pos[:, self._wheel_ids]
         raw_vel = self.robot.data.joint_vel[:, self._wheel_ids]
@@ -192,7 +233,17 @@ class ResidualLqrEnv(StandupEnv):
         state6 = torch.stack([wheel_position_m, wheel_velocity_m_s, theta, theta_dot, yaw, yaw_rate], dim=1)
         return -(state6 @ self._k6_lqr.T)
 
+    # =============================================================================
+    # DISTURBANCE GENERATION
+    # =============================================================================
+
     def _sample_disturbance(self, env_ids_t: torch.Tensor) -> None:
+        """Sample per-environment training current disturbances.
+
+        Disturbance amplitudes are amperes from residual_lqr_env_cfg.py. The
+        sampled pulse is applied later as left=+amp and right=-amp for a fixed
+        number of control samples.
+        """
         choices = torch.tensor(self.cfg.disturbance_currents_a, device=self.device, dtype=torch.float32)
         choice_ids = torch.randint(len(self.cfg.disturbance_currents_a), (len(env_ids_t),), device=self.device)
         self._disturbance_current_amp[env_ids_t] = choices[choice_ids]
@@ -203,7 +254,22 @@ class ResidualLqrEnv(StandupEnv):
         self._disturbance_start_step[env_ids_t] = start_steps
         self._disturbance_stop_step[env_ids_t] = start_steps + int(self.cfg.disturbance_samples)
 
+    # =============================================================================
+    # ACTION PROCESSING AND DDSM115 MOTOR MODEL
+    # =============================================================================
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        """Combine LQR, residual, and disturbance currents, then apply wheels.
+
+        Args:
+            actions: Tensor with shape (num_envs, 2). Values are normalized
+                residual actions in [-1, 1] and are scaled by
+                cfg.residual_action_limit to amperes.
+
+        The final desired current is passed through a duplicate of the DDSM115
+        motor model in standup_env.py. Keep both copies identical until the
+        shared motor model is extracted.
+        """
         actions = actions.clamp(-1.0, 1.0)
         self._enforce_cybergear_joint_state_limits()
 
@@ -232,6 +298,9 @@ class ResidualLqrEnv(StandupEnv):
         self._disturbance_current[:, 1] = torch.where(active, -self._disturbance_current_amp, 0.0)
 
         self._final_current = self._lqr_current + self._cur_rl_current + self._disturbance_current
+        # ---------------------------------------------------------------------
+        # DDSM115 MOTOR MODEL
+        # ---------------------------------------------------------------------
         self._wheel_i_des = self._final_current
         self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
@@ -249,7 +318,16 @@ class ResidualLqrEnv(StandupEnv):
         self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
         self.robot.set_joint_effort_target(self._efforts_buf, joint_ids=self._wheel_ids)
 
+    # =============================================================================
+    # OBSERVATION CONSTRUCTION
+    # =============================================================================
+
     def _get_observations(self) -> dict:
+        """Build the 8-value residual policy observation.
+
+        The order must match scripts/lqr_control.py::residual_observation() so
+        exported residual policies receive the same inputs during evaluation.
+        """
         self._enforce_cybergear_joint_state_limits()
         raw_vel = self.robot.data.joint_vel[:, self._wheel_ids]
         wheel_vel = raw_vel * self._wheel_sign
@@ -271,7 +349,17 @@ class ResidualLqrEnv(StandupEnv):
         )
         return {"policy": torch.nan_to_num(obs, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)}
 
+    # =============================================================================
+    # REWARD CALCULATION
+    # =============================================================================
+
     def _get_rewards(self) -> torch.Tensor:
+        """Compute the residual-learning reward.
+
+        This reward penalizes pitch, pitch rate, base position, and residual
+        current effort. Keep scripts/lqr_control.py::residual_reward() aligned
+        if benchmark reward columns are compared to training rewards.
+        """
         pitch = _pitch_from_projected_gravity(self.bno080.data.projected_gravity_b)
         pitch_rate = -self.bno080.data.ang_vel_b[:, 0]
         position = 0.5 * self.robot.data.joint_pos[:, self._wheel_ids].mul(self._wheel_sign).sum(dim=1) * R_WHEEL
@@ -298,6 +386,10 @@ class ResidualLqrEnv(StandupEnv):
         }
         return reward
 
+    # =============================================================================
+    # TERMINATION LOGIC
+    # =============================================================================
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         pitch = _pitch_from_projected_gravity(self.bno080.data.projected_gravity_b)
         body_z = torch.nan_to_num(self.robot.data.root_pos_w[:, 2], nan=-999.0)
@@ -306,6 +398,10 @@ class ResidualLqrEnv(StandupEnv):
         terminated = fallen | physics_broken
         timeout = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, timeout
+
+    # =============================================================================
+    # RESET LOGIC
+    # =============================================================================
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         super()._reset_idx(env_ids)

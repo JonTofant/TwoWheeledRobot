@@ -1,11 +1,17 @@
 """
 Robot articulation configuration for the custom two-wheeled robot.
 
-Wheel joints: Revolute_13 (left) and Revolute_6 (right)
-These are configured as pure effort-controlled actuators.
+Purpose:
+    Connect the USD asset to Isaac Lab and define actuator groups for DDSM115
+    wheel joints, CyberGear leg joints, and passive bearing joints.
 
-Drive gains (stiffness / damping) are imported from sim_params.py so that the
-USD can keep them at 0 and Python sets the desired values at simulation start.
+Edit here when:
+    The USD path, joint-name patterns, actuator effort limits, or default
+    articulation properties need to change.
+
+Avoid changing here without also checking:
+    Joint names used in standup_env.py, residual_lqr_env.py, lqr_control.py,
+    contact sensor body names, and deployment documentation.
 """
 
 import os

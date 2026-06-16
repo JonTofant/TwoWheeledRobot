@@ -3,7 +3,21 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to play a checkpoint if an RL agent from RSL-RL."""
+"""
+Play and export RSL-RL checkpoints for registered Isaac Lab tasks.
+
+Purpose:
+    Launch Isaac Sim, load a trained checkpoint, step the selected environment,
+    and export the policy to TorchScript and ONNX for evaluation/deployment.
+
+Edit here when:
+    You need to adjust checkpoint resolution, export behavior, or play-loop
+    diagnostics. Most task-specific behavior belongs in environment/config files.
+
+Avoid changing here without also checking:
+    scripts/rsl_rl/train.py, scripts/rsl_rl/cli_args.py, UART deployment, and
+    registered task IDs in twowheeledrobot/__init__.py.
+"""
 
 """Launch Isaac Sim Simulator first."""
 

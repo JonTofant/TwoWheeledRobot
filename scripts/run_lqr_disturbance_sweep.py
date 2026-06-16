@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Run an LQR actuator-disturbance sweep and summarize recovery metrics."""
+"""
+Run pulse-style LQR actuator-disturbance sweeps.
+
+Purpose:
+    Call scripts/lqr_control.py repeatedly with physical-forward current pulses,
+    then summarize pitch recovery and command-effort metrics.
+
+Edit here when:
+    You want to change sweep currents, output folders, or aggregate metrics for
+    pulse disturbance studies.
+
+Avoid changing here without also checking:
+    scripts/lqr_control.py::actuator_disturbance_current(), CSV column names in
+    sample_to_row(), and downstream repeatability/plot scripts that import this
+    module as `sweep`.
+"""
 
 from __future__ import annotations
 

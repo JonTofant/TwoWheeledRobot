@@ -113,9 +113,9 @@ scripts/lqr_control.py
   -> imports TwoWheeledRobot.tasks for Gym registration side effects
   -> imports sim_params.py::{DDSM115_I_PEAK, GROUND_*}
   -> defines LqrPhysicalParams and LqrWeights
-  -> calculate_lqr_gains()
-  -> calculate_lqr6_gains()
-  -> global A_LQR, B_LQR, K_CURRENT_LQR, A6_LQR, B6_LQR, K6_LQR
+  -> compute_single_wheel_4_state_lqr_current()
+  -> compute_split_4_state_lqr_currents()
+  -> shared K_SPLIT_4_STATE_LQR_CURRENT gain vector
   -> hydra_task_config(args_cli.task, None)
   -> mutates env_cfg for diagnostic mode
      -> scene.num_envs = 1
@@ -134,8 +134,8 @@ scripts/lqr_control.py
      -> read_state()
      -> compute_action()
         -> free-spin constant current, or
-        -> selected_wheel_currents()
-           -> lqr4 or lqr6
+        -> compute_split_4_state_lqr_currents()
+           -> independent left/right 4-state wheel controllers
         -> residual_current_from_policy()
            -> load_residual_policy()
            -> residual_observation()
@@ -521,13 +521,13 @@ Recommended single owner:
 Current locations:
 
 - `residual_lqr_env.py::_build_pitch_model()` and `_calculate_lqr6_gain()`
-- `scripts/lqr_control.py::build_pitch_model()`, `calculate_lqr_gains()`, and `calculate_lqr6_gains()`
+- `scripts/lqr_control.py::compute_single_wheel_4_state_lqr_current()` and `compute_split_4_state_lqr_currents()`
 - `scripts/calculate_lqr_gains.py::build_pitch_model()` and `lqr()`
 
 Risk:
 
-- The 6-state training controller and diagnostic controller can drift.
-- The 4-state gain calculator already uses different default `q_wheel_velocity` than current 6-state LQR paths, so future edits can deepen the mismatch.
+- The 6-state residual-training controller and split 4-state diagnostic controller are now intentionally different.
+- The 4-state gain calculator remains a separate reference and can drift from the diagnostic script if gains are copied manually.
 
 Recommended single owner:
 

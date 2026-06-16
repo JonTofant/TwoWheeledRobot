@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Repeat LQR and residual-PPO disturbance tests and aggregate pitch metrics."""
+"""
+Repeat pulse disturbance tests for LQR and LQR plus residual PPO.
+
+Purpose:
+    Reuse run_lqr_disturbance_sweep.py to launch many lqr_control.py runs and
+    aggregate pitch/current metrics across repeats and controllers.
+
+Edit here when:
+    You want to change repeat counts, aggregate statistics, controller labels,
+    or comparison plots for pulse disturbances.
+
+Avoid changing here without also checking:
+    run_lqr_disturbance_sweep.py, scripts/lqr_control.py CSV columns, and any
+    reports that consume per_run_summary.csv or aggregate_summary.csv.
+"""
 
 from __future__ import annotations
 

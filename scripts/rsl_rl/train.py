@@ -3,7 +3,21 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to train RL agent with RSL-RL."""
+"""
+Train registered Isaac Lab tasks with RSL-RL.
+
+Purpose:
+    Launch Isaac Sim, load the selected task and agent configuration through
+    Hydra/Gym registration, and run RSL-RL training.
+
+Edit here when:
+    You need to adjust training entry-point behavior, logging folders, or RSL-RL
+    runner setup. Most task-specific edits belong in environment/config files.
+
+Avoid changing here without also checking:
+    scripts/rsl_rl/play.py, scripts/rsl_rl/cli_args.py, Isaac Lab launch order,
+    and registered task IDs in twowheeledrobot/__init__.py.
+"""
 
 """Launch Isaac Sim Simulator first."""
 
