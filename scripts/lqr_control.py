@@ -69,12 +69,18 @@ parser.add_argument("--disturbance-yaw-torque-nm", type=float, default=0.25, hel
 parser.add_argument("--disturbance-body", type=str, default="Platform_Group", help="Robot body name receiving the external wrench.")
 parser.add_argument(
     "--actuator-disturbance",
-    choices=("none", "physical-forward"),
+    choices=("none", "physical-forward", "step-forward"),
     default="none",
     help="Optional deterministic two-wheel current disturbance added after the LQR command in lqr-floor mode.",
 )
 parser.add_argument("--actuator-disturbance-start-s", type=float, default=1.5, help="Requested start time for the actuator disturbance.")
 parser.add_argument("--actuator-disturbance-samples", type=int, default=2, help="Number of control samples to inject the actuator disturbance.")
+parser.add_argument(
+    "--actuator-disturbance-duration-s",
+    type=float,
+    default=0.0,
+    help="Duration in seconds for step-forward actuator disturbance. Pulse-style disturbances use --actuator-disturbance-samples.",
+)
 parser.add_argument(
     "--actuator-disturbance-current-a",
     type=float,
@@ -485,7 +491,7 @@ def actuator_disturbance_current(control_sample: int) -> tuple[bool, tuple[float
     if not active:
         return False, (0.0, 0.0), -1
     magnitude = args_cli.actuator_disturbance_current_a
-    if args_cli.actuator_disturbance == "physical-forward":
+    if args_cli.actuator_disturbance in ("physical-forward", "step-forward"):
         return True, (magnitude, -magnitude), control_sample - start
     raise ValueError(f"Unsupported actuator disturbance '{args_cli.actuator_disturbance}'.")
 
@@ -805,6 +811,7 @@ def sample_to_row(state: RobotState, motor: dict[str, tuple[float, float]], cont
         "u_right_rl_a": ACTUATOR_COMMAND_DEBUG.rl_current_a[1],
         "disturbance_current": args_cli.actuator_disturbance_current_a if args_cli.actuator_disturbance != "none" else 0.0,
         "disturbance_start": args_cli.actuator_disturbance_start_s,
+        "actuator_disturbance_duration_s": args_cli.actuator_disturbance_duration_s if args_cli.actuator_disturbance == "step-forward" else 0.0,
         "disturbance_left_a": ACTUATOR_COMMAND_DEBUG.disturbance_current_a[0],
         "disturbance_right_a": ACTUATOR_COMMAND_DEBUG.disturbance_current_a[1],
         "u_left_final": ACTUATOR_COMMAND_DEBUG.commanded_current_a[0],
@@ -1030,6 +1037,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         raise ValueError("--actuator-disturbance-start-s must be non-negative.")
     if args_cli.actuator_disturbance_samples < 0:
         raise ValueError("--actuator-disturbance-samples must be non-negative.")
+    if args_cli.actuator_disturbance_duration_s < 0.0:
+        raise ValueError("--actuator-disturbance-duration-s must be non-negative.")
+    if args_cli.actuator_disturbance == "step-forward" and args_cli.actuator_disturbance_duration_s <= 0.0:
+        raise ValueError("--actuator-disturbance-duration-s must be positive for --actuator-disturbance step-forward.")
     if args_cli.actuator_disturbance != "none" and args_cli.test_mode != "lqr-floor":
         raise ValueError("--actuator-disturbance is only supported with --test-mode lqr-floor.")
     if args_cli.residual_action_limit < 0.0:
@@ -1091,7 +1102,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
     dt = env.unwrapped.step_dt
     start_sample = math.ceil(args_cli.actuator_disturbance_start_s / dt - 1.0e-9)
     ACTUATOR_COMMAND_DEBUG.start_sample_index = start_sample
-    ACTUATOR_COMMAND_DEBUG.stop_sample_index = start_sample + args_cli.actuator_disturbance_samples
+    if args_cli.actuator_disturbance == "step-forward":
+        duration_samples = max(1, math.ceil(args_cli.actuator_disturbance_duration_s / dt - 1.0e-9))
+        ACTUATOR_COMMAND_DEBUG.stop_sample_index = start_sample + duration_samples
+    else:
+        ACTUATOR_COMMAND_DEBUG.stop_sample_index = start_sample + args_cli.actuator_disturbance_samples
     logger, plotter = CsvLogger(args_cli.log_csv), None
     if signals:
         try:
@@ -1130,7 +1145,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
             f"requested_start={args_cli.actuator_disturbance_start_s:.6f} s "
             f"actual_start_sample={ACTUATOR_COMMAND_DEBUG.start_sample_index} "
             f"actual_start_time={ACTUATOR_COMMAND_DEBUG.start_sample_index * dt:.6f} s "
-            f"samples={args_cli.actuator_disturbance_samples} "
+            f"samples={max(0, ACTUATOR_COMMAND_DEBUG.stop_sample_index - ACTUATOR_COMMAND_DEBUG.start_sample_index)} "
+            f"duration={max(0, ACTUATOR_COMMAND_DEBUG.stop_sample_index - ACTUATOR_COMMAND_DEBUG.start_sample_index) * dt:.6f} s "
             f"physical_forward={args_cli.actuator_disturbance_current_a:+.6f} A "
             f"mapping left={args_cli.actuator_disturbance_current_a:+.6f} A right={-args_cli.actuator_disturbance_current_a:+.6f} A"
         )
