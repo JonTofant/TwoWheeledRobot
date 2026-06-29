@@ -85,6 +85,59 @@ python scripts/rsl_rl/play.py \
 
 Check exported policies under `logs/rsl_rl/standup_two_wheel/<run>/exported/`.
 
+## Pure NN Balance Controller
+
+Task:
+
+```text
+Template-Twowheeledrobot-PureNNBalance-v0
+```
+
+Policy rate is 50 Hz (`dt = 0.02 s`). The deployed current model takes 8 normalized `float32` observations and returns two wheel current commands in amperes:
+
+```text
+0  x_rel / 1.0 m
+1  linear_velocity / 1.0 m/s
+2  pitch / 25 deg
+3  pitch_rate / 4.0 rad/s
+4  yaw_error / pi rad
+5  yaw_rate / 4.0 rad/s
+6  previous_left_current / I_max
+7  previous_right_current / I_max
+```
+
+The inference-ready ONNX wrapper applies `tanh(actor(obs)) * I_max`; default `I_max = 2.0 A`. Default training does not apply additional command smoothing or hard slew limiting. Optional hardware-safety testing can enable:
+
+```text
+I_filtered = alpha * I_previous + (1 - alpha) * I_network
+optional slew limit = 0.3 A per 20 ms sample
+```
+
+Train all curriculum stages and export the current-output ONNX model:
+
+```bash
+python scripts/train_pure_nn_curriculum.py --num_envs 4096 --headless
+```
+
+Manual export from an existing `policy.pt`:
+
+```bash
+python scripts/export_pure_nn_current_onnx.py \
+  --policy logs/rsl_rl/pure_nn_balance_two_wheel/<run>/exported/policy.pt \
+  --output logs/rsl_rl/pure_nn_balance_two_wheel/<run>/exported/policy_current.onnx \
+  --i-max-a 2.0
+```
+
+The export script runs ONNX Runtime validation and fails if max error is `>= 1e-4`.
+
+Benchmark scenarios:
+
+```bash
+python scripts/benchmark_pure_nn_balance.py \
+  --policy logs/rsl_rl/pure_nn_balance_two_wheel/<run>/exported/policy.pt \
+  --num_envs 64 --headless
+```
+
 ## UART Runner
 
 Host-side runner:

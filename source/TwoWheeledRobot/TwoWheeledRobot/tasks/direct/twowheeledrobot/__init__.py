@@ -30,3 +30,13 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_residual_lqr_cfg:ResidualLqrPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Template-Twowheeledrobot-PureNNBalance-v0",
+    entry_point=f"{__name__}.pure_nn_balance_env:PureNNBalanceEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pure_nn_balance_env_cfg:PureNNBalanceEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_pure_nn_balance_cfg:PureNNBalancePPORunnerCfg",
+    },
+)
