@@ -7,10 +7,10 @@ Purpose:
 
 Main responsibilities:
     - Build residual-policy observations.
-    - Compute LQR wheel currents.
-    - Add residual RL currents.
+    - Compute LQR wheel commands.
+    - Add residual RL wheel commands.
     - Add training disturbances.
-    - Apply the DDSM115 wheel motor model.
+    - Apply the selected wheel actuator model.
     - Compute residual-learning reward.
 
 Important consistency requirements:
@@ -19,8 +19,8 @@ Important consistency requirements:
       evaluation reward metrics are compared.
     - LQR physical parameters should stay consistent with scripts/lqr_control.py
       and scripts/calculate_lqr_gains.py.
-    - DDSM115 motor logic should stay consistent with standup_env.py until it is
-      extracted into a shared motor model.
+    - Wheel actuator logic should stay consistent with standup_env.py until it
+      is extracted into a shared motor model.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import torch
 
 from .residual_lqr_env_cfg import ResidualLqrEnvCfg
 from .sim_params import DDSM115_I_PEAK, DDSM115_KT, DDSM115_NO_LOAD_SPEED, DDSM115_TAU_PEAK
-from .standup_env import StandupEnv
+from .standup_env import StandupEnv, WHEEL_ACTUATOR_DDSM115, WHEEL_ACTUATOR_MUJOCO
 
 
 # =============================================================================
@@ -75,6 +75,10 @@ class LqrWeights:
 
 LQR_CURRENT_SIGN = -1.0
 LQR_YAW_SIGN = -1.0
+MUJOCO_K_POSITION = 23.8188
+MUJOCO_K_VELOCITY = 16.7186
+MUJOCO_K_PITCH = 77.3774
+MUJOCO_K_PITCH_RATE = 4.5646
 LQR_PHYSICAL_PARAMS = LqrPhysicalParams(
     body_mass_kg=2.6,
     wheel_cart_mass_kg=1.53,
@@ -203,7 +207,8 @@ class ResidualLqrEnv(StandupEnv):
         self._episode_reward = torch.zeros(self.num_envs, device=self.device)
         print(
             "[ResidualLqrEnv] LQR active, residual_rl="
-            f"{self.cfg.enable_residual_rl}, residual_action_limit={self.cfg.residual_action_limit:.3f} A"
+            f"{self.cfg.enable_residual_rl}, residual_action_limit={self.cfg.residual_action_limit:.3f}, "
+            f"wheel_actuator={self.cfg.wheel_actuator_model}"
         )
 
     # =============================================================================
@@ -233,16 +238,38 @@ class ResidualLqrEnv(StandupEnv):
         state6 = torch.stack([wheel_position_m, wheel_velocity_m_s, theta, theta_dot, yaw, yaw_rate], dim=1)
         return -(state6 @ self._k6_lqr.T)
 
+    def _compute_mujoco_lqr_torque(self) -> torch.Tensor:
+        """Return MuJoCo-style direct left/right wheel torques in Nm."""
+        proj_grav = self.bno080.data.projected_gravity_b
+        raw_pos = self.robot.data.joint_pos[:, self._wheel_ids]
+        raw_vel = self.robot.data.joint_vel[:, self._wheel_ids]
+        wheel_pos = raw_pos * self._wheel_sign
+        wheel_vel = raw_vel * self._wheel_sign
+
+        theta = _pitch_from_projected_gravity(proj_grav)
+        theta_dot = -self.bno080.data.ang_vel_b[:, 0]
+        wheel_position_m = 0.5 * wheel_pos.sum(dim=1) * R_WHEEL
+        wheel_velocity_m_s = 0.5 * wheel_vel.sum(dim=1) * R_WHEEL
+
+        u_balance = -(
+            MUJOCO_K_POSITION * wheel_position_m
+            + MUJOCO_K_VELOCITY * wheel_velocity_m_s
+            + MUJOCO_K_PITCH * theta
+            + MUJOCO_K_PITCH_RATE * theta_dot
+        )
+        torque = -0.5 * u_balance
+        return torch.stack([torque, torque], dim=1)
+
     # =============================================================================
     # DISTURBANCE GENERATION
     # =============================================================================
 
     def _sample_disturbance(self, env_ids_t: torch.Tensor) -> None:
-        """Sample per-environment training current disturbances.
+        """Sample per-environment training actuator disturbances.
 
-        Disturbance amplitudes are amperes from residual_lqr_env_cfg.py. The
-        sampled pulse is applied later as left=+amp and right=-amp for a fixed
-        number of control samples.
+        Disturbance amplitudes are Nm in MuJoCo mode and amperes in DDSM115
+        mode. The sampled pulse is applied as same-sign forward wheel command
+        for a fixed number of control samples.
         """
         choices = torch.tensor(self.cfg.disturbance_currents_a, device=self.device, dtype=torch.float32)
         choice_ids = torch.randint(len(self.cfg.disturbance_currents_a), (len(env_ids_t),), device=self.device)
@@ -259,16 +286,13 @@ class ResidualLqrEnv(StandupEnv):
     # =============================================================================
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        """Combine LQR, residual, and disturbance currents, then apply wheels.
+        """Combine LQR, residual, and disturbance commands, then apply wheels.
 
         Args:
             actions: Tensor with shape (num_envs, 2). Values are normalized
                 residual actions in [-1, 1] and are scaled by
-                cfg.residual_action_limit to amperes.
-
-        The final desired current is passed through a duplicate of the DDSM115
-        motor model in standup_env.py. Keep both copies identical until the
-        shared motor model is extracted.
+                cfg.residual_action_limit. In MuJoCo mode the unit is Nm; in
+                DDSM115 mode the unit is A.
         """
         actions = actions.clamp(-1.0, 1.0)
         self._enforce_cybergear_joint_state_limits()
@@ -288,31 +312,44 @@ class ResidualLqrEnv(StandupEnv):
         zero_cg_targets = torch.max(self._cg_joint_lo, torch.min(self._cg_joint_hi, zero_cg_targets))
         self.robot.set_joint_position_target(zero_cg_targets, joint_ids=self._cg_ids)
 
-        self._lqr_current = self._compute_lqr_current()
+        if self.cfg.wheel_actuator_model == WHEEL_ACTUATOR_MUJOCO:
+            self._lqr_current = self._compute_mujoco_lqr_torque()
+        elif self.cfg.wheel_actuator_model == WHEEL_ACTUATOR_DDSM115:
+            self._lqr_current = self._compute_lqr_current()
+        else:
+            raise ValueError(f"Unsupported wheel_actuator_model: {self.cfg.wheel_actuator_model}")
         active = (
             (self.episode_length_buf >= self._disturbance_start_step)
             & (self.episode_length_buf < self._disturbance_stop_step)
         )
         self._disturbance_current.zero_()
         self._disturbance_current[:, 0] = torch.where(active, self._disturbance_current_amp, 0.0)
-        self._disturbance_current[:, 1] = torch.where(active, -self._disturbance_current_amp, 0.0)
+        self._disturbance_current[:, 1] = torch.where(active, self._disturbance_current_amp, 0.0)
 
         self._final_current = self._lqr_current + self._cur_rl_current + self._disturbance_current
-        # ---------------------------------------------------------------------
-        # DDSM115 MOTOR MODEL
-        # ---------------------------------------------------------------------
-        self._wheel_i_des = self._final_current
-        self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
-        self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
-        self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
-        self._wheel_velocity_used = self._wheel_velocity_raw.clone()
-        self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
-        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
-        self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
-        self._wheel_torque_cmd = torch.maximum(
-            -self._wheel_tau_speed_limit,
-            torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
-        )
+        if self.cfg.wheel_actuator_model == WHEEL_ACTUATOR_MUJOCO:
+            torque_limit = self.cfg.wheel_torque_command_limit
+            self._wheel_torque_cmd = self._final_current.clamp(-torque_limit, torque_limit)
+            self._wheel_tau_current = self._wheel_torque_cmd
+            self._wheel_i_des = self._final_current / DDSM115_KT
+            self._wheel_i_cmd = self._wheel_torque_cmd / DDSM115_KT
+            self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+            self._wheel_velocity_used = self._wheel_velocity_raw.clone()
+            self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+            self._wheel_tau_speed_limit = torch.full_like(self._wheel_torque_cmd, torque_limit)
+        else:
+            self._wheel_i_des = self._final_current
+            self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
+            self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
+            self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+            self._wheel_velocity_used = self._wheel_velocity_raw.clone()
+            self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+            self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
+            self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
+            self._wheel_torque_cmd = torch.maximum(
+                -self._wheel_tau_speed_limit,
+                torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
+            )
 
         self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
         self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
@@ -356,32 +393,49 @@ class ResidualLqrEnv(StandupEnv):
     def _get_rewards(self) -> torch.Tensor:
         """Compute the residual-learning reward.
 
-        This reward penalizes pitch, pitch rate, base position, and residual
-        current effort. Keep scripts/lqr_control.py::residual_reward() aligned
-        if benchmark reward columns are compared to training rewards.
+        Positive per-step shaping rewards staying upright for the full episode.
+        The explicit fall penalty prevents the policy from improving return by
+        terminating early to avoid future balance penalties.
         """
         pitch = _pitch_from_projected_gravity(self.bno080.data.projected_gravity_b)
         pitch_rate = -self.bno080.data.ang_vel_b[:, 0]
         position = 0.5 * self.robot.data.joint_pos[:, self._wheel_ids].mul(self._wheel_sign).sum(dim=1) * R_WHEEL
         rl_action_sq = self._cur_rl_current.pow(2).sum(dim=1)
+        upright_reward = torch.exp(-8.0 * pitch.pow(2))
+        rate_reward = torch.exp(-0.15 * pitch_rate.pow(2))
+        position_reward = torch.exp(-0.25 * position.pow(2))
+        alive_reward = torch.ones_like(pitch) * 0.05
+        effort_penalty = 0.02 * rl_action_sq
+        fallen = pitch.abs() > math.radians(self.cfg.floor_stop_pitch_deg)
+        fall_penalty = torch.where(fallen, torch.full_like(pitch, 5.0), torch.zeros_like(pitch))
+
         reward = (
-            -pitch.pow(2)
-            -0.1 * pitch_rate.pow(2)
-            -0.05 * position.pow(2)
-            -0.01 * rl_action_sq
+            1.0 * upright_reward
+            + 0.3 * rate_reward
+            + 0.2 * position_reward
+            + alive_reward
+            - effort_penalty
+            - fall_penalty
         )
-        reward = torch.nan_to_num(reward, nan=0.0, posinf=0.0, neginf=-10.0).clamp(-10.0, 0.0)
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=1.55, neginf=-5.0).clamp(-5.0, 1.55)
         self._episode_reward += reward
         self.extras["log"] = {
             "reward": reward.mean(),
             "episode_reward": self._episode_reward.mean(),
+            "rew_upright": upright_reward.mean(),
+            "rew_rate": rate_reward.mean(),
+            "rew_position": position_reward.mean(),
+            "rew_alive": alive_reward.mean(),
+            "penalty_effort": effort_penalty.mean(),
+            "penalty_fall": fall_penalty.mean(),
+            "fall_rate": fallen.float().mean(),
             "u_left_lqr": self._lqr_current[:, 0].mean(),
             "u_right_lqr": self._lqr_current[:, 1].mean(),
             "u_left_rl": self._cur_rl_current[:, 0].mean(),
             "u_right_rl": self._cur_rl_current[:, 1].mean(),
             "u_left_final": self._final_current[:, 0].mean(),
             "u_right_final": self._final_current[:, 1].mean(),
-            "disturbance_current": self._disturbance_current_amp.mean(),
+            "disturbance_command": self._disturbance_current_amp.mean(),
             "disturbance_start": self._disturbance_start_s.mean(),
         }
         return reward

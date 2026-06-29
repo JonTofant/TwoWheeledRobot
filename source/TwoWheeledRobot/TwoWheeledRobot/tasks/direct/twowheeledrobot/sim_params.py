@@ -88,14 +88,23 @@ DDSM115_TAU_PEAK: float = 2.0                    # Nm, stall/short-term peak
 DDSM115_RATED_SPEED: float = 115.0 * 2.0 * math.pi / 60.0  # rad/s
 DDSM115_NO_LOAD_SPEED: float = 200.0 * 2.0 * math.pi / 60.0  # rad/s
 
+# MuJoCo sim2sim plant defaults. The MuJoCo XML uses direct wheel torque motors
+# with ctrlrange=[-4, 4] Nm and wheel joint damping=0.2 Nm*s/rad.
+MUJOCO_WHEEL_TORQUE_LIMIT: float = 4.0
+MUJOCO_WHEEL_DAMPING: float = 0.2
+MUJOCO_WHEEL_FRICTIONLOSS: float = 0.01
+MUJOCO_WHEEL_VELOCITY_LIMIT: float = 1.0e6
+MUJOCO_ACTUATOR_MODEL: str = "mujoco_torque"
+MUJOCO_LQR_PITCH_SIGN: float = 1.0
+
 WHEEL_DRIVE_STIFFNESS: float = 0.0   # pure effort control for wheel joints
 CYBERGEAR_STIFFNESS: float = 30.0    # Nm/rad — default sim kp
 CYBERGEAR_DAMPING: float = 3.0       # Nm*s/rad — default sim kd
 
-# The torque-speed curve already includes the losses that define no-load speed.
-# Additional wheel damping would double-count those losses and make a free wheel
-# settle below the documented 200 rpm endpoint.
-WHEEL_INTERNAL_DAMPING: float = 0.0   # Nm·s/rad
+# Default to the MuJoCo wheel damping for sim2sim training. If using the DDSM115
+# torque-speed model for hardware realism, revisit this to avoid double-counting
+# motor losses.
+WHEEL_INTERNAL_DAMPING: float = MUJOCO_WHEEL_DAMPING   # Nm*s/rad
 
 # Passive revolute joints (leg parallelogram bearings).
 # Rolling-element bearings have very low but non-zero viscous friction.
@@ -106,5 +115,5 @@ BEARING_DAMPING: float = 0.005   # Nm·s/rad
 # =========================================================================== #
 #  Solver quality                                                              #
 # =========================================================================== #
-SOLVER_POSITION_ITERS: int = 4   # was 8 — halves constraint solver cost; revert to 6 if joints show tunnelling
-SOLVER_VELOCITY_ITERS: int = 1   # was 4
+SOLVER_POSITION_ITERS: int = 8
+SOLVER_VELOCITY_ITERS: int = 4

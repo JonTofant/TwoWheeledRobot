@@ -59,8 +59,12 @@ from .sim_params import (
     GROUND_DYNAMIC_FRICTION,
     GROUND_RESTITUTION,
     GROUND_STATIC_FRICTION,
-    WHEEL_INTERNAL_DAMPING,
+    MUJOCO_WHEEL_FRICTIONLOSS,
 )
+
+
+WHEEL_ACTUATOR_MUJOCO = "mujoco_torque"
+WHEEL_ACTUATOR_DDSM115 = "ddsm115"
 
 
 # =============================================================================
@@ -177,7 +181,8 @@ class StandupEnv(DirectRLEnv):
             f"obs={cfg.observation_space}  act={cfg.action_space}  "
             f"episode={cfg.episode_length_s:.0f} s  "
             f"success_required={cfg.success_steps_required} steps  "
-            f"cg_gains={'fixed' if cfg.cg_use_fixed_gains else 'randomized'}"
+            f"cg_gains={'fixed' if cfg.cg_use_fixed_gains else 'randomized'}  "
+            f"wheel_actuator={cfg.wheel_actuator_model}"
         )
 
     # ── Joint limit helpers ──────────────────────────────────────────────────
@@ -292,26 +297,36 @@ class StandupEnv(DirectRLEnv):
         cg_targets = self._cg_joint_lo + act01 * (self._cg_joint_hi - self._cg_joint_lo)
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
-        # ---------------------------------------------------------------------
-        # DDSM115 MOTOR MODEL
-        # ---------------------------------------------------------------------
-        # ── DDSM115 current/torque motor model ────────────────────────────────
-        # Policy actions request current. Convert to torque, then apply the
-        # short-term peak and linear torque-speed envelope. Positive values are
-        # forward-positive here; only the final left effort is negated because
-        # the left wheel joint axis is mirrored in the USD.
-        self._wheel_i_des = actions[:, 4:6] * self.cfg.wheel_current_max
-        self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
-        self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
-        self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
-        self._wheel_velocity_used = self._wheel_velocity_raw.clone()
-        self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
-        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
-        self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
-        self._wheel_torque_cmd = torch.maximum(
-            -self._wheel_tau_speed_limit,
-            torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
-        )
+        # ── Wheel actuator model ──────────────────────────────────────────────
+        # MuJoCo sim2sim mode: actions request direct wheel torque. The current
+        # buffers are filled with equivalent current only to keep logging and
+        # downstream diagnostics compatible.
+        if self.cfg.wheel_actuator_model == WHEEL_ACTUATOR_MUJOCO:
+            torque_limit = self.cfg.wheel_torque_command_limit
+            self._wheel_torque_cmd = (actions[:, 4:6] * torque_limit).clamp(-torque_limit, torque_limit)
+            self._wheel_tau_current = self._wheel_torque_cmd
+            self._wheel_i_des = self._wheel_torque_cmd / DDSM115_KT
+            self._wheel_i_cmd = self._wheel_i_des
+            self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+            self._wheel_velocity_used = self._wheel_velocity_raw.clone()
+            self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+            self._wheel_tau_speed_limit = torch.full_like(self._wheel_torque_cmd, torque_limit)
+        elif self.cfg.wheel_actuator_model == WHEEL_ACTUATOR_DDSM115:
+            # DDSM115 current/torque model. Policy actions request current.
+            self._wheel_i_des = actions[:, 4:6] * self.cfg.ddsm115_wheel_current_max
+            self._wheel_i_cmd = self._wheel_i_des.clamp(-DDSM115_I_PEAK, DDSM115_I_PEAK)
+            self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
+            self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+            self._wheel_velocity_used = self._wheel_velocity_raw.clone()
+            self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+            self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
+            self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
+            self._wheel_torque_cmd = torch.maximum(
+                -self._wheel_tau_speed_limit,
+                torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
+            )
+        else:
+            raise ValueError(f"Unsupported wheel_actuator_model: {self.cfg.wheel_actuator_model}")
 
         self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
         self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
@@ -631,10 +646,11 @@ class StandupEnv(DirectRLEnv):
                 env_ids=env_ids_cpu,
             )
 
-        # Wheel rotational friction ±50 %
+        # Wheel Coulomb-like friction loss. MuJoCo XML uses frictionloss=0.01;
+        # viscous joint damping=0.2 is configured separately in robot_cfg.py.
         lo_wd, hi_wd = self.cfg.wheel_damping_scale_range
         fric_default = torch.zeros(n, n_joints)
-        fric_default[:, wheel_cols] = WHEEL_INTERNAL_DAMPING
+        fric_default[:, wheel_cols] = MUJOCO_WHEEL_FRICTIONLOSS
         fric_scale = torch.ones(n, n_joints)
         fric_scale[:, wheel_cols] = torch.empty(n, 2).uniform_(lo_wd, hi_wd)
         self.robot.write_joint_friction_coefficient_to_sim(

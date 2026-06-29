@@ -24,9 +24,9 @@ from .sim_params import (
     BEARING_DAMPING,
     CYBERGEAR_DAMPING,
     CYBERGEAR_STIFFNESS,
-    DDSM115_NO_LOAD_SPEED,
-    DDSM115_TAU_PEAK,
     LINEAR_DAMPING,
+    MUJOCO_WHEEL_TORQUE_LIMIT,
+    MUJOCO_WHEEL_VELOCITY_LIMIT,
     SOLVER_POSITION_ITERS,
     SOLVER_VELOCITY_ITERS,
     WHEEL_DRIVE_STIFFNESS,
@@ -77,8 +77,8 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
         # ------------------------------------------------------------------ #
         "wheel_joints": ImplicitActuatorCfg(
             joint_names_expr=["DDSM115_Levi", "DDSM115_Desni"],
-            effort_limit_sim=DDSM115_TAU_PEAK,
-            velocity_limit_sim=DDSM115_NO_LOAD_SPEED,
+            effort_limit_sim=MUJOCO_WHEEL_TORQUE_LIMIT,
+            velocity_limit_sim=MUJOCO_WHEEL_VELOCITY_LIMIT,
             stiffness=WHEEL_DRIVE_STIFFNESS,
             damping=WHEEL_INTERNAL_DAMPING,
         ),

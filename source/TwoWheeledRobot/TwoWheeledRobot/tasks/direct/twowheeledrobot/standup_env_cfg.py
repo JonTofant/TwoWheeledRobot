@@ -59,6 +59,8 @@ from .sim_params import (
     DDSM115_KT,
     DDSM115_NO_LOAD_SPEED,
     DDSM115_TAU_RATED,
+    MUJOCO_ACTUATOR_MODEL,
+    MUJOCO_WHEEL_TORQUE_LIMIT,
     PHYSICS_DT,
 )
 
@@ -145,10 +147,13 @@ class StandupEnvCfg(DirectRLEnvCfg):
     success_steps_required: int    = 2      # consecutive steps ≈ 40 ms at 50 Hz
 
     # ── Action parameterisation ───────────────────────────────────────────────
-    # Use rated torque for conservative training. The environment still models
-    # the 2.0 Nm short-term peak and the torque-speed envelope.
-    wheel_torque_command_limit: float = DDSM115_TAU_RATED
-    wheel_current_max: float = wheel_torque_command_limit / DDSM115_KT
+    # Default is MuJoCo sim2sim matching: actions command direct wheel torque in
+    # [-4, 4] Nm. Set wheel_actuator_model="ddsm115" to restore current commands
+    # through the DDSM115 torque-speed limiter.
+    wheel_actuator_model: str = MUJOCO_ACTUATOR_MODEL
+    wheel_torque_command_limit: float = MUJOCO_WHEEL_TORQUE_LIMIT
+    wheel_current_max: float = MUJOCO_WHEEL_TORQUE_LIMIT  # legacy name; torque normalizer in MuJoCo mode
+    ddsm115_wheel_current_max: float = DDSM115_TAU_RATED / DDSM115_KT
     wheel_velocity_norm: float = DDSM115_NO_LOAD_SPEED
 
     # Standup is a high-impulse maneuver, so use fixed strong CyberGear gains
@@ -194,7 +199,7 @@ class StandupEnvCfg(DirectRLEnvCfg):
     # ── Domain randomisation ──────────────────────────────────────────────────
     cg_kp_scale_range:         tuple = (1.00, 1.00)   # unused when cg_use_fixed_gains=True
     cg_kd_scale_range:         tuple = (1.00, 1.00)   # unused when cg_use_fixed_gains=True
-    wheel_damping_scale_range: tuple = (0.50, 1.50)   # ±50 % wheel friction
+    wheel_damping_scale_range: tuple = (1.00, 1.00)   # fixed MuJoCo damping by default
 
     # ── Observation noise ─────────────────────────────────────────────────────
     noise_proj_grav_std: float = 0.010   # BNO080 gravity projection noise

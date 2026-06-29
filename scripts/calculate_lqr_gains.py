@@ -23,11 +23,11 @@ State used for the pitch model:
 Input used by the model:
     u_force = forward ground force from both wheels, in newtons
 
-The main printed gains are per-wheel current gains for the editable
-manual_current block in scripts/lqr_control.py:
-    current_a = -K_current @ state
+The main printed gains are per-wheel physical force gains for the editable
+force-space block in scripts/lqr_control.py:
+    force_n = -K_force @ state
 
-The script also prints equivalent torque/current/action gains so you can check
+The script also prints equivalent current/torque/action gains so you can check
 the conversion chain.
 
 Pure roll is not controllable by wheel torque in this simple fixed-leg model.
@@ -174,28 +174,36 @@ def print_results(params: RobotParams, weights: LqrWeights) -> None:
     print("Converted gain for normalized wheel action, u_action = -K_action @ state:")
     print(f"  K_action = {k_action}")
     print()
-    k_torque_per_wheel = k_force * params.wheel_radius_m * 0.5
+    k_force_per_wheel = 0.5 * k_force
+    k_torque_per_wheel = k_force_per_wheel * params.wheel_radius_m
     k_current_per_wheel = k_torque_per_wheel / params.wheel_torque_constant_nm_per_a
 
+    print("Per-wheel force gain for split LQR, force_n = -K_force @ state:")
+    print(f"  K_force_per_wheel = {k_force_per_wheel}")
+    print()
     print("Equivalent per-wheel torque gain, torque_nm = -K_torque @ state:")
     print(f"  K_torque_per_wheel = {k_torque_per_wheel}")
     print()
     print("Equivalent per-wheel current gain, current_a = -K_current @ state:")
     print(f"  K_current_per_wheel = {k_current_per_wheel}")
     print()
-    print("Paste these into scripts/lqr_control.py manual_current USER LQR TUNING SECTION:")
-    print(f"  K_WHEEL_POSITION_CURRENT = {k_current_per_wheel[0]:.6g}")
-    print(f"  K_WHEEL_VELOCITY_CURRENT = {k_current_per_wheel[1]:.6g}")
+    print("Paste these into scripts/lqr_control.py USER LQR TUNING SECTION:")
+    print(f"  K_POSITION_FORCE_PER_WHEEL = {k_force_per_wheel[0]:.6g}")
+    print(f"  K_VELOCITY_FORCE_PER_WHEEL = {k_force_per_wheel[1]:.6g}")
+    print(f"  K_PITCH_FORCE_PER_WHEEL = {k_force_per_wheel[2]:.6g}")
+    print(f"  K_PITCH_RATE_FORCE_PER_WHEEL = {k_force_per_wheel[3]:.6g}")
+    print()
+    print("Equivalent current-space values for comparison only:")
+    print(f"  K_POSITION_CURRENT = {k_current_per_wheel[0]:.6g}")
+    print(f"  K_VELOCITY_CURRENT = {k_current_per_wheel[1]:.6g}")
     print(f"  K_PITCH_CURRENT = {k_current_per_wheel[2]:.6g}")
     print(f"  K_PITCH_RATE_CURRENT = {k_current_per_wheel[3]:.6g}")
-    print("  K_ROLL_CURRENT = 0.0")
-    print("  K_ROLL_RATE_CURRENT = 0.0")
     print()
-    print("For reference, force gains for u_forward_force_N = -K_force @ state are:")
-    print(f"  K_WHEEL_POSITION_FORCE = {k_force[0]:.6g}")
-    print(f"  K_WHEEL_VELOCITY_FORCE = {k_force[1]:.6g}")
-    print(f"  K_PITCH_FORCE = {k_force[2]:.6g}")
-    print(f"  K_PITCH_RATE_FORCE = {k_force[3]:.6g}")
+    print("For reference, total-force gains for u_forward_force_N = -K_force @ state are:")
+    print(f"  K_WHEEL_POSITION_FORCE_TOTAL = {k_force[0]:.6g}")
+    print(f"  K_WHEEL_VELOCITY_FORCE_TOTAL = {k_force[1]:.6g}")
+    print(f"  K_PITCH_FORCE_TOTAL = {k_force[2]:.6g}")
+    print(f"  K_PITCH_RATE_FORCE_TOTAL = {k_force[3]:.6g}")
     print()
     print("For comparison, equivalent normalized Isaac action gains are:")
     print(f"  K_PITCH_ACTION = {k_action[2]:.6g}")
@@ -205,7 +213,7 @@ def print_results(params: RobotParams, weights: LqrWeights) -> None:
     print("Notes:")
     print("  - Force gains assume pitch is rad and pitch_rate is rad/s.")
     print("  - lqr_control.py converts wheel joint rad/s to m/s before applying")
-    print("    these current gains.")
+    print("    these force gains, then converts force to current.")
     print("  - If the wheels drive the wrong way, flip signs in lqr_control.py first;")
     print("    do not immediately change the LQR weights.")
 
