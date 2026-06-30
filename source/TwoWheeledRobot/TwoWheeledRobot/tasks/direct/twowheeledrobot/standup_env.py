@@ -38,6 +38,7 @@ See standup_env_cfg.py for all tunable parameters.
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Sequence
 
 import torch
@@ -244,17 +245,33 @@ class StandupEnv(DirectRLEnv):
             self.wheel_contacts = ContactSensor(self.cfg.wheel_contacts)
             self.scene.sensors["wheel_contacts"] = self.wheel_contacts
 
-        # Flat ground only — no terrain variation for the standup task.
+        ground_static = GROUND_STATIC_FRICTION
+        ground_dynamic = GROUND_DYNAMIC_FRICTION
+        ground_mode = getattr(self.cfg, "ground_friction_randomization_mode", "inactive")
+        if ground_mode == "per_run":
+            ground_static = random.uniform(*self.cfg.ground_static_friction_range)
+            ground_dynamic = random.uniform(*self.cfg.ground_dynamic_friction_range)
+        self._ground_friction_randomization_mode = ground_mode
+        self._ground_static_friction = ground_static
+        self._ground_dynamic_friction = ground_dynamic
+
+        # Flat ground only — no terrain variation for the standup task. Pure NN
+        # balance may randomize the shared ground material once per run.
         spawn_ground_plane(
             prim_path="/World/ground",
             cfg=GroundPlaneCfg(
                 physics_material=RigidBodyMaterialCfg(
-                    static_friction=GROUND_STATIC_FRICTION,
-                    dynamic_friction=GROUND_DYNAMIC_FRICTION,
+                    static_friction=ground_static,
+                    dynamic_friction=ground_dynamic,
                     restitution=GROUND_RESTITUTION,
                 )
             ),
         )
+        if ground_mode == "per_run":
+            print(
+                "[StandupEnv] Ground friction randomized per run: "
+                f"static={ground_static:.3f}, dynamic={ground_dynamic:.3f}"
+            )
 
         # ALL body collisions remain enabled — the torso, leg links, and CyberGear
         # housings must physically rest on the ground when the robot is fallen.
@@ -646,8 +663,8 @@ class StandupEnv(DirectRLEnv):
                 env_ids=env_ids_cpu,
             )
 
-        # Wheel Coulomb-like friction loss. MuJoCo XML uses frictionloss=0.01;
-        # viscous joint damping=0.2 is configured separately in robot_cfg.py.
+        # Standup default wheel Coulomb-like friction loss. Pure NN balance
+        # overrides this at reset with absolute physical frictionloss samples.
         lo_wd, hi_wd = self.cfg.wheel_damping_scale_range
         fric_default = torch.zeros(n, n_joints)
         fric_default[:, wheel_cols] = MUJOCO_WHEEL_FRICTIONLOSS

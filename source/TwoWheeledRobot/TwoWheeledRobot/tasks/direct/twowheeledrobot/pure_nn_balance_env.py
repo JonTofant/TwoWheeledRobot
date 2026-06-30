@@ -36,6 +36,9 @@ class PureNNBalanceEnv(StandupEnv):
     def __init__(self, cfg: PureNNBalanceEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self._wheel_sign = torch.tensor([-1.0, 1.0], device=self.device, dtype=torch.float32)
+        self._sampled_wheel_frictionloss = torch.zeros(self.num_envs, 2, device=self.device)
+        self._sampled_wheel_viscous_damping = torch.zeros(self.num_envs, 2, device=self.device)
+        self._randomization_debug_reset_count = 0
         self._yaw_reference = torch.zeros(self.num_envs, device=self.device)
         self._pitch_bias = torch.zeros(self.num_envs, device=self.device)
         self._obs_delay_samples = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
@@ -46,6 +49,13 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_disturbance_torque = torch.zeros(self.num_envs, 3, device=self.device)
         self._body_force = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._body_torque = torch.zeros_like(self._body_force)
+        self._fall_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self._last_fall = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._last_physics_broken = torch.zeros_like(self._last_fall)
+        self._last_invalid_state = torch.zeros_like(self._last_fall)
+        self._last_timeout = torch.zeros_like(self._last_fall)
+        self._last_terminal_penalty = torch.zeros(self.num_envs, device=self.device)
+        self._termination_update_step = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
         self._body_ids = self._resolve_push_body_ids()
 
         self._obs_builder = NormalizedObservationBuilder(cfg, self.device)
@@ -57,6 +67,139 @@ class PureNNBalanceEnv(StandupEnv):
             "[PureNNBalanceEnv] pure NN current controller active, "
             f"dt={self.step_dt:.3f}s, obs={cfg.observation_space}, act={cfg.action_space}, "
             f"I_max={cfg.i_max_a:.2f}A, curriculum_stage={cfg.curriculum_stage}"
+        )
+        self._print_randomization_summary()
+
+    def _print_randomization_summary(self) -> None:
+        ground_mode = getattr(self, "_ground_friction_randomization_mode", "inactive")
+        print("ACTIVE RANDOMIZATION SUMMARY")
+        print(f"motor gain: active, range {self.cfg.motor_gain_range}")
+        print(f"motor deadzone: active, range {self.cfg.motor_deadzone_a_range} A")
+        print(f"motor current bias: active, range {self.cfg.motor_bias_a_range} A")
+        print(f"motor time constant: active, range {self.cfg.motor_tau_s_range} s")
+        print(f"motor current limit: active, range {self.cfg.motor_current_limit_a_range} A")
+        print("obs delay: active, values {0,1}")
+        print("action delay: active, values {0,1}")
+        print(f"wheel frictionloss: active, range {self.cfg.wheel_frictionloss_range}")
+        if self.cfg.wheel_viscous_damping_randomization_active:
+            print(f"wheel viscous damping: active, range {self.cfg.wheel_viscous_damping_range} Nm*s/rad")
+        else:
+            print("wheel viscous damping: inactive")
+        if ground_mode == "per_run":
+            print(
+                "ground static/dynamic friction: active per-run, "
+                f"range {self.cfg.ground_static_friction_range}/{self.cfg.ground_dynamic_friction_range}, "
+                f"sampled {self._ground_static_friction:.3f}/{self._ground_dynamic_friction:.3f}"
+            )
+        else:
+            print("ground static/dynamic friction: inactive")
+        print("mass/COM/inertia/wheel radius: inactive")
+
+    def _apply_pure_nn_physical_randomization(self, env_ids_t: torch.Tensor) -> None:
+        env_ids_cpu = env_ids_t.detach().cpu()
+        n = len(env_ids_t)
+        n_joints = self._default_joint_damping.shape[1]
+        wheel_cols = [self._left_wheel_ids[0], self._right_wheel_ids[0]]
+
+        fric_lo, fric_hi = self.cfg.wheel_frictionloss_range
+        wheel_frictionloss = torch.empty(n, 2, device=self.device).uniform_(fric_lo, fric_hi)
+        self._sampled_wheel_frictionloss[env_ids_t] = wheel_frictionloss
+        fric = torch.zeros(n, n_joints, device=self.device)
+        fric[:, wheel_cols] = wheel_frictionloss
+        self.robot.write_joint_friction_coefficient_to_sim(fric, env_ids=env_ids_cpu)
+
+        if self.cfg.wheel_viscous_damping_randomization_active:
+            damp_lo, damp_hi = self.cfg.wheel_viscous_damping_range
+            wheel_damping = torch.empty(n, 2, device=self.device).uniform_(damp_lo, damp_hi)
+            self._sampled_wheel_viscous_damping[env_ids_t] = wheel_damping
+            joint_damping = self._default_joint_damping[env_ids_cpu].clone().to(self.device)
+            joint_damping[:, wheel_cols] = wheel_damping
+            self.robot.write_joint_damping_to_sim(joint_damping, env_ids=env_ids_cpu)
+        else:
+            self._sampled_wheel_viscous_damping[env_ids_t] = float("nan")
+
+    def _log_randomization_samples(self, env_ids_t: torch.Tensor) -> None:
+        if self._randomization_debug_reset_count >= self.cfg.randomization_debug_log_resets:
+            return
+        count = min(self.cfg.randomization_debug_env_count, len(env_ids_t))
+        if count <= 0:
+            return
+        ids = env_ids_t[:count]
+        self._randomization_debug_reset_count += 1
+        print(f"[PureNNBalanceEnv] reset randomization sample #{self._randomization_debug_reset_count}")
+        print(f"  env_ids={ids.detach().cpu().tolist()}")
+        print(f"  wheel_frictionloss_LR={self._sampled_wheel_frictionloss[ids].detach().cpu().tolist()}")
+        if self.cfg.wheel_viscous_damping_randomization_active:
+            print(f"  wheel_viscous_damping_LR={self._sampled_wheel_viscous_damping[ids].detach().cpu().tolist()}")
+        print(
+            "  motor_gain_LR="
+            f"{torch.stack([self._action_processor.left_gain[ids], self._action_processor.right_gain[ids]], dim=1).detach().cpu().tolist()}"
+        )
+        print(f"  motor_deadzone_LR={self._action_processor.deadzone[ids].detach().cpu().tolist()}")
+        print(f"  motor_tau_s_LR={self._action_processor.tau_s[ids].detach().cpu().tolist()}")
+        print(f"  motor_current_limit_LR={self._action_processor.current_limit[ids].detach().cpu().tolist()}")
+
+    def _update_termination_flags(
+        self,
+        pitch: torch.Tensor,
+        pitch_rate: torch.Tensor,
+        velocity: torch.Tensor,
+        yaw_error: torch.Tensor,
+        yaw_rate: torch.Tensor,
+    ) -> None:
+        needs_update = self._termination_update_step != self.episode_length_buf
+        if not torch.any(needs_update):
+            return
+
+        body_z = self.robot.data.root_pos_w[:, 2]
+        root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w
+        root_ang_vel = self.robot.data.root_ang_vel_w
+        wheel_pos = self.robot.data.joint_pos[:, self._wheel_ids]
+        wheel_vel = self.robot.data.joint_vel[:, self._wheel_ids]
+        finite_state = (
+            torch.isfinite(pitch)
+            & torch.isfinite(pitch_rate)
+            & torch.isfinite(velocity)
+            & torch.isfinite(yaw_error)
+            & torch.isfinite(yaw_rate)
+            & torch.isfinite(body_z)
+            & torch.isfinite(root_pos).all(dim=1)
+            & torch.isfinite(root_quat).all(dim=1)
+            & torch.isfinite(root_ang_vel).all(dim=1)
+            & torch.isfinite(wheel_pos).all(dim=1)
+            & torch.isfinite(wheel_vel).all(dim=1)
+        )
+        invalid_state = ~finite_state
+        body_z_safe = torch.nan_to_num(body_z, nan=-999.0)
+        physics_broken = body_z_safe < 0.02
+
+        over_pitch = pitch.abs() > math.radians(self.cfg.fall_pitch_threshold_deg)
+        updated_counter = torch.where(over_pitch, self._fall_counter + 1, torch.zeros_like(self._fall_counter))
+        self._fall_counter = torch.where(needs_update, updated_counter, self._fall_counter)
+        fall = self._fall_counter >= self.cfg.fall_consecutive_steps
+        timeout = self.episode_length_buf >= self.max_episode_length - 1
+
+        terminal_penalty = torch.zeros(self.num_envs, device=self.device)
+        terminal_penalty = torch.where(fall, torch.full_like(terminal_penalty, self.cfg.fall_penalty), terminal_penalty)
+        terminal_penalty = torch.where(
+            physics_broken,
+            torch.full_like(terminal_penalty, self.cfg.physics_broken_penalty),
+            terminal_penalty,
+        )
+        terminal_penalty = torch.where(
+            invalid_state,
+            torch.full_like(terminal_penalty, self.cfg.invalid_state_penalty),
+            terminal_penalty,
+        )
+
+        self._last_fall = torch.where(needs_update, fall, self._last_fall)
+        self._last_physics_broken = torch.where(needs_update, physics_broken, self._last_physics_broken)
+        self._last_invalid_state = torch.where(needs_update, invalid_state, self._last_invalid_state)
+        self._last_timeout = torch.where(needs_update, timeout, self._last_timeout)
+        self._last_terminal_penalty = torch.where(needs_update, terminal_penalty, self._last_terminal_penalty)
+        self._termination_update_step = torch.where(
+            needs_update, self.episode_length_buf, self._termination_update_step
         )
 
     def _resolve_push_body_ids(self) -> torch.Tensor | None:
@@ -137,39 +280,53 @@ class PureNNBalanceEnv(StandupEnv):
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        x_rel, velocity, pitch, pitch_rate, yaw_error, _ = self._state_terms()
-        reward = self._reward.compute(
+        x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
+        self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
+        reward, reward_components = self._reward.compute(
             pitch,
             pitch_rate,
             velocity,
-            x_rel,
             yaw_error,
+            yaw_rate,
             self._action_processor.command_current,
             self._action_processor.delta_current(),
+            self._last_terminal_penalty,
         )
         self._episode_reward += reward
-        fallen = pitch.abs() > math.radians(self.cfg.floor_stop_pitch_deg)
         self.extras["log"] = {
             "reward": reward.mean(),
             "episode_reward": self._episode_reward.mean(),
+            "reward_alive": reward_components["alive"].mean(),
+            "reward_pitch_penalty": reward_components["pitch"].mean(),
+            "reward_pitch_rate_penalty": reward_components["pitch_rate"].mean(),
+            "reward_velocity_penalty": reward_components["velocity"].mean(),
+            "reward_yaw_error_penalty": reward_components["yaw_error"].mean(),
+            "reward_yaw_rate_penalty": reward_components["yaw_rate"].mean(),
+            "reward_current_penalty": reward_components["current"].mean(),
+            "reward_terminal_penalty": reward_components["terminal"].mean(),
+            "reward_total": reward_components["total"].mean(),
             "pitch_abs_deg": pitch.abs().mean() * 180.0 / math.pi,
             "pitch_rate_abs": pitch_rate.abs().mean(),
             "position_abs": x_rel.abs().mean(),
+            "velocity_abs": velocity.abs().mean(),
+            "yaw_error_abs": yaw_error.abs().mean(),
+            "yaw_rate_abs": yaw_rate.abs().mean(),
             "current_rms": torch.sqrt(self._action_processor.command_current.pow(2).mean()),
-            "fall_rate": fallen.float().mean(),
+            "fall_rate": self._last_fall.float().mean(),
+            "termination_timeout": self._last_timeout.float().mean(),
+            "termination_fall": self._last_fall.float().mean(),
+            "termination_physics_broken": self._last_physics_broken.float().mean(),
+            "termination_invalid_state": self._last_invalid_state.float().mean(),
             "disturbance_force_n": self._last_disturbance_force.norm(dim=1).mean(),
             "disturbance_torque_nm": self._last_disturbance_torque.norm(dim=1).mean(),
         }
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x_rel, _, pitch, _, _, _ = self._state_terms()
-        body_z = torch.nan_to_num(self.robot.data.root_pos_w[:, 2], nan=-999.0)
-        fallen = pitch.abs() > math.radians(self.cfg.floor_stop_pitch_deg)
-        out_of_bounds = x_rel.abs() > self.cfg.position_stop_m
-        physics_broken = body_z < -1.0
-        terminated = fallen | out_of_bounds | physics_broken
-        timeout = self.episode_length_buf >= self.max_episode_length - 1
+        _, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
+        self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
+        terminated = self._last_fall | self._last_physics_broken | self._last_invalid_state
+        timeout = self._last_timeout
         return terminated, timeout
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -215,11 +372,20 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_disturbance_torque[env_ids_t] = 0.0
         self._body_force[env_ids_t] = 0.0
         self._body_torque[env_ids_t] = 0.0
+        self._fall_counter[env_ids_t] = 0
+        self._last_fall[env_ids_t] = False
+        self._last_physics_broken[env_ids_t] = False
+        self._last_invalid_state[env_ids_t] = False
+        self._last_timeout[env_ids_t] = False
+        self._last_terminal_penalty[env_ids_t] = 0.0
+        self._termination_update_step[env_ids_t] = -1
         self._obs_now[env_ids_t] = 0.0
         self._obs_delay[env_ids_t] = 0.0
         self._obs_delay_samples[env_ids_t] = torch.randint(0, 2, (n,), device=self.device)
         self._pitch_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(*self.cfg.pitch_bias_rad_range)
+        self._apply_pure_nn_physical_randomization(env_ids_t)
         self._action_processor.reset(env_ids_t)
+        self._log_randomization_samples(env_ids_t)
         self._disturbance.reset(env_ids_t, self.cfg.curriculum_stage, self.step_dt)
         forced_kind = {
             "none": DIST_NONE,

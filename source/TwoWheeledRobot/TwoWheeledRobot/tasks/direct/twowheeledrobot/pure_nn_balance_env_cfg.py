@@ -16,6 +16,8 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     episode_length_s: float = 8.0
     floor_initial_pitch_deg: float = 3.0
     floor_stop_pitch_deg: float = 25.0
+    fall_pitch_threshold_deg: float = 25.0
+    fall_consecutive_steps: int = 5
     position_stop_m: float = 1.0
     success_steps_required: int = 1_000_000_000
     enable_wheel_contacts: bool = False
@@ -38,24 +40,44 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     # Progressive training stage: 1..5. Override from CLI, e.g. curriculum_stage=3.
     curriculum_stage: int = 1
 
-    # Reward weights: +alive - weighted quadratic penalties.
-    rew_alive: float = 1.0
-    rew_pitch: float = 12.0
-    rew_pitch_rate: float = 0.8
-    rew_velocity: float = 0.15
-    rew_position: float = 0.4
-    rew_yaw_error: float = 0.1
-    rew_current: float = 0.01
-    rew_delta_current: float = 0.03
+    # Initial state randomization for balance training.
+    reset_pitch_range_deg: float = 20.0
+    reset_pitch_rate_range_radps: float = 0.8
+    reset_velocity_range_mps: float = 0.15
 
-    # Domain randomization. Physical mass/COM/inertia hooks are sampled and logged;
-    # apply support is simulator-version dependent, so motor/sensor randomization is the deployed-critical path.
+    # Reward weights: +alive - weighted quadratic penalties. Position is kept
+    # in the observation but intentionally not penalized or used for termination.
+    rew_alive: float = 1.0
+    rew_pitch: float = 10.0
+    rew_pitch_rate: float = 0.4
+    rew_velocity: float = 0.15
+    rew_position: float = 0.0
+    rew_yaw_error: float = 0.05
+    rew_yaw_rate: float = 0.05
+    rew_current: float = 0.003
+    rew_delta_current: float = 0.0
+    fall_penalty: float = -100.0
+    physics_broken_penalty: float = -100.0
+    invalid_state_penalty: float = -100.0
+
+    # Active sim2real randomization. Wheel friction and motor response parameters
+    # are randomized around physically plausible/identified nominal values.
+    wheel_frictionloss_range: tuple = (0.007, 0.013)  # Coulomb-like joint frictionloss, nominal 0.010.
+    wheel_viscous_damping_randomization_active: bool = True
+    wheel_viscous_damping_range: tuple = (0.006, 0.014)  # Nm*s/rad, DDSM115 internal damping estimate.
+    ground_friction_randomization_mode: str = "per_run"  # Shared ground plane; sampled once at env startup.
+    ground_static_friction_range: tuple = (0.5, 1.1)
+    ground_dynamic_friction_range: tuple = (0.4, 0.9)
+
+    # Inactive/planned physical randomization. These ranges are not applied by
+    # the current pure NN environment and must not be reported as active.
     body_mass_scale_range: tuple = (0.9, 1.1)
     body_com_height_scale_range: tuple = (0.9, 1.1)
     body_pitch_inertia_scale_range: tuple = (0.8, 1.2)
     wheel_radius_scale_range: tuple = (0.98, 1.02)
-    ground_static_friction_range: tuple = (0.7, 1.1)
-    ground_dynamic_friction_range: tuple = (0.6, 1.0)
+
+    randomization_debug_log_resets: int = 3
+    randomization_debug_env_count: int = 4
 
     motor_gain_range: tuple = (0.8, 1.2)
     motor_deadzone_a_range: tuple = (0.03, 0.20)

@@ -18,6 +18,7 @@ parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-PureNN
 parser.add_argument("--policy", required=True, type=Path, help="TorchScript actor exported by play.py")
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--num_steps", type=int, default=400, help="400 steps = 8 s at 50 Hz")
+parser.add_argument("--include-sine-diagnostic", action="store_true", help="Include optional sine diagnostic benchmark.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
@@ -35,24 +36,77 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaaclab_tasks  # noqa: F401
 import TwoWheeledRobot.tasks  # noqa: F401
-from TwoWheeledRobot.tasks.direct.twowheeledrobot.pure_nn_components import pitch_from_projected_gravity
+from TwoWheeledRobot.tasks.direct.twowheeledrobot.pure_nn_components import yaw_from_quat_wxyz
 
 
-def _scenario_metrics(policy: torch.nn.Module, env, steps: int) -> dict[str, float]:
+def _set_initial_pitch_bin(env, low_deg: float, high_deg: float) -> torch.Tensor:
     unwrapped = env.unwrapped
-    reset_out = env.reset()
-    obs_dict = reset_out[0] if isinstance(reset_out, tuple) else reset_out
-    obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
+    env_ids = torch.arange(unwrapped.num_envs, device=unwrapped.device, dtype=torch.long)
+    n = len(env_ids)
+    abs_pitch = torch.empty(n, device=unwrapped.device).uniform_(math.radians(low_deg), math.radians(high_deg))
+    sign = torch.where(torch.rand(n, device=unwrapped.device) < 0.5, -1.0, 1.0)
+    pitch = abs_pitch * sign
+
+    root_state = unwrapped.robot.data.default_root_state[env_ids].clone()
+    root_state[:, :3] += unwrapped.scene.env_origins[env_ids]
+    root_state[:, 2] = unwrapped.scene.env_origins[env_ids, 2] + unwrapped.cfg.spawn_upright_z
+    root_state[:, 3] = torch.cos(0.5 * pitch)
+    root_state[:, 4] = -torch.sin(0.5 * pitch)
+    root_state[:, 5:7] = 0.0
+    root_state[:, 7:] = 0.0
+    unwrapped.robot.write_root_pose_to_sim(root_state[:, :7], env_ids)
+    unwrapped.robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids)
+    unwrapped._spawn_pos_xy[env_ids] = root_state[:, :2]
+    unwrapped._yaw_reference[env_ids] = yaw_from_quat_wxyz(root_state[:, 3:7])
+
+    joint_pos = unwrapped.robot.data.default_joint_pos[env_ids].clone()
+    joint_vel = unwrapped.robot.data.default_joint_vel[env_ids].clone()
+    joint_pos[:, unwrapped._cg_ids] = 0.0
+    joint_vel[:, unwrapped._cg_ids] = 0.0
+    joint_vel[:, unwrapped._wheel_ids] = 0.0
+    unwrapped.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+    unwrapped.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
+
+    unwrapped._prev_actions[env_ids] = 0.0
+    unwrapped._cur_actions[env_ids] = 0.0
+    unwrapped._obs_now[env_ids] = 0.0
+    unwrapped._obs_delay[env_ids] = 0.0
+    unwrapped._obs_delay_samples[env_ids] = 0
+    unwrapped._pitch_bias[env_ids] = 0.0
+    unwrapped._action_processor.reset(env_ids)
+    if hasattr(unwrapped, "_fall_counter"):
+        unwrapped._fall_counter[env_ids] = 0
+        unwrapped._last_fall[env_ids] = False
+        unwrapped._last_physics_broken[env_ids] = False
+        unwrapped._last_invalid_state[env_ids] = False
+        unwrapped._last_timeout[env_ids] = False
+        unwrapped._last_terminal_penalty[env_ids] = 0.0
+        unwrapped._termination_update_step[env_ids] = -1
+    return pitch
+
+
+def _terminal_reason_summary(reason: torch.Tensor) -> str:
+    labels = {0: "none", 1: "timeout", 2: "fall", 3: "physics_broken", 4: "invalid_state"}
+    counts = []
+    for code, label in labels.items():
+        count = int((reason == code).sum().item())
+        if count > 0:
+            counts.append(f"{label}:{count}")
+    return ",".join(counts) if counts else "none:0"
+
+
+def _scenario_metrics(policy: torch.nn.Module, env, steps: int, pitch_bin: tuple[float, float]) -> dict[str, float | str]:
+    unwrapped = env.unwrapped
+    env.reset()
+    _set_initial_pitch_bin(env, *pitch_bin)
+    obs = unwrapped._get_observations()["policy"]
     dt = unwrapped.step_dt
     alive = torch.ones(unwrapped.num_envs, dtype=torch.bool, device=unwrapped.device)
     survival = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     pitch_hist = []
-    rate_hist = []
+    velocity_hist = []
     current_hist = []
-    pos_hist = []
-    recovery_time = torch.full((unwrapped.num_envs,), float("nan"), device=unwrapped.device)
-    stable_count = torch.zeros(unwrapped.num_envs, device=unwrapped.device, dtype=torch.long)
-    disturbance_seen = torch.zeros(unwrapped.num_envs, dtype=torch.bool, device=unwrapped.device)
+    terminal_reason = torch.zeros(unwrapped.num_envs, device=unwrapped.device, dtype=torch.long)
 
     for step in range(steps):
         with torch.inference_mode():
@@ -63,39 +117,35 @@ def _scenario_metrics(policy: torch.nn.Module, env, steps: int) -> dict[str, flo
                 dones = terminated | truncated
             else:
                 obs, _, dones, _ = step_out
-        pitch = pitch_from_projected_gravity(unwrapped.bno080.data.projected_gravity_b)
-        pitch_rate = -unwrapped.bno080.data.ang_vel_b[:, 0]
-        pos = 0.5 * unwrapped.robot.data.joint_pos[:, unwrapped._wheel_ids].mul(unwrapped._wheel_sign).sum(dim=1) * 0.05035
+        _, velocity, pitch, _, _, _ = unwrapped._state_terms()
         current = unwrapped._action_processor.command_current
         pitch_hist.append(pitch)
-        rate_hist.append(pitch_rate)
+        velocity_hist.append(velocity)
         current_hist.append(current)
-        pos_hist.append(pos)
         survival = torch.where(alive, torch.full_like(survival, (step + 1) * dt), survival)
+        newly_done = alive & dones
+        reason_step = torch.zeros_like(terminal_reason)
+        if hasattr(unwrapped, "_last_timeout"):
+            reason_step = torch.where(unwrapped._last_timeout, torch.ones_like(reason_step), reason_step)
+            reason_step = torch.where(unwrapped._last_fall, torch.full_like(reason_step, 2), reason_step)
+            reason_step = torch.where(unwrapped._last_physics_broken, torch.full_like(reason_step, 3), reason_step)
+            reason_step = torch.where(unwrapped._last_invalid_state, torch.full_like(reason_step, 4), reason_step)
+        terminal_reason = torch.where(newly_done, reason_step, terminal_reason)
         alive &= ~dones
 
-        disturbance_step = torch.clamp(unwrapped.episode_length_buf - 1, min=0)
-        disturbance_active = unwrapped._disturbance.active_for_recovery(disturbance_step)
-        disturbance_seen |= disturbance_active
-        measuring_recovery = disturbance_seen & ~disturbance_active
-        stable = (pitch.abs() < math.radians(2.0)) & (pitch_rate.abs() < 0.2)
-        stable_count = torch.where(measuring_recovery & stable, stable_count + 1, torch.zeros_like(stable_count))
-        recovered = stable_count >= int(math.ceil(0.5 / dt))
-        recovery_time = torch.where(recovered & torch.isnan(recovery_time), torch.full_like(recovery_time, step * dt), recovery_time)
-
     pitch_t = torch.stack(pitch_hist)
-    rate_t = torch.stack(rate_hist)
+    velocity_t = torch.stack(velocity_hist)
     current_t = torch.stack(current_hist)
-    pos_t = torch.stack(pos_hist)
     return {
         "survival_time_s": survival.mean().item(),
+        "fall_rate": (terminal_reason == 2).float().mean().item(),
         "max_pitch_deg": (pitch_t.abs().max() * 180.0 / math.pi).item(),
         "rms_pitch_deg": (torch.sqrt(pitch_t.pow(2).mean()) * 180.0 / math.pi).item(),
-        "rms_pitch_rate": torch.sqrt(rate_t.pow(2).mean()).item(),
+        "rms_velocity_mps": torch.sqrt(velocity_t.pow(2).mean()).item(),
+        "final_velocity_mps": velocity_t[-1].mean().item(),
         "rms_current_a": torch.sqrt(current_t.pow(2).mean()).item(),
         "max_current_a": current_t.abs().max().item(),
-        "final_position_error_m": pos_t[-1].abs().mean().item(),
-        "recovery_time_s": torch.nanmean(recovery_time).item(),
+        "terminal_reason": _terminal_reason_summary(terminal_reason),
     }
 
 
@@ -111,21 +161,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         ("double_human_push", 3),
         ("payload", 4),
         ("payload_push", 5),
-        ("sine_diagnostic", 5),
-        ("slope", 5),
         ("randomized_motor", 1),
     ]
+    if args_cli.include_sine_diagnostic:
+        scenarios.append(("sine_diagnostic", 5))
+    pitch_bins = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0), (15.0, 20.0)]
     for name, stage in scenarios:
         env_cfg.curriculum_stage = stage
         env_cfg.benchmark_disturbance_kind = "none" if name == "randomized_motor" else name
-        env = gym.make(args_cli.task, cfg=env_cfg)
-        if isinstance(env.unwrapped, DirectMARLEnv):
-            env = multi_agent_to_single_agent(env)
-        metrics = _scenario_metrics(policy, env, args_cli.num_steps)
-        env.close()
         print(f"\n[{name}]")
-        for key, value in metrics.items():
-            print(f"{key}: {value:.6g}")
+        for pitch_bin in pitch_bins:
+            env = gym.make(args_cli.task, cfg=env_cfg)
+            if isinstance(env.unwrapped, DirectMARLEnv):
+                env = multi_agent_to_single_agent(env)
+            metrics = _scenario_metrics(policy, env, args_cli.num_steps, pitch_bin)
+            env.close()
+            print(f"pitch_bin_deg: {pitch_bin[0]:.0f}-{pitch_bin[1]:.0f}")
+            for key, value in metrics.items():
+                if isinstance(value, str):
+                    print(f"{key}: {value}")
+                else:
+                    print(f"{key}: {value:.6g}")
 
 
 if __name__ == "__main__":

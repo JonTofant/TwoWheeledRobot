@@ -122,9 +122,11 @@ class CurriculumSampler:
         return int(self.cfg.curriculum_stage)
 
     def reset_ranges(self) -> tuple[float, float, float]:
-        if self.stage <= 1:
-            return math.radians(3.0), 0.2, 0.05
-        return math.radians(8.0), 0.8, 0.15
+        return (
+            math.radians(self.cfg.reset_pitch_range_deg),
+            self.cfg.reset_pitch_rate_range_radps,
+            self.cfg.reset_velocity_range_mps,
+        )
 
 
 DIST_NONE = 0
@@ -292,17 +294,26 @@ class BalanceReward:
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
         velocity: torch.Tensor,
-        position: torch.Tensor,
         yaw_error: torch.Tensor,
+        yaw_rate: torch.Tensor,
         current: torch.Tensor,
         delta_current: torch.Tensor,
-    ) -> torch.Tensor:
-        reward = torch.ones_like(pitch) * self.cfg.rew_alive
-        reward -= self.cfg.rew_pitch * pitch.pow(2)
-        reward -= self.cfg.rew_pitch_rate * pitch_rate.pow(2)
-        reward -= self.cfg.rew_velocity * velocity.pow(2)
-        reward -= self.cfg.rew_position * position.pow(2)
-        reward -= self.cfg.rew_yaw_error * yaw_error.pow(2)
-        reward -= self.cfg.rew_current * current.pow(2).sum(dim=1)
-        reward -= self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1)
-        return torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=-100.0).clamp(-100.0, 1.0)
+        terminal_penalty: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        components = {
+            "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
+            "pitch": -self.cfg.rew_pitch * pitch.pow(2),
+            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
+            "velocity": -self.cfg.rew_velocity * velocity.pow(2),
+            "yaw_error": -self.cfg.rew_yaw_error * yaw_error.pow(2),
+            "yaw_rate": -self.cfg.rew_yaw_rate * yaw_rate.pow(2),
+            "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
+            "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
+        }
+        if terminal_penalty is None:
+            terminal_penalty = torch.zeros_like(pitch)
+        components["terminal"] = terminal_penalty
+        reward = sum(components.values())
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=-100.0).clamp(-100.0, 1.0)
+        components["total"] = reward
+        return reward, components
