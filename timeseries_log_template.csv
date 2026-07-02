@@ -1,0 +1,9 @@
+t_s,platform,scenario,run_id,initial_theta_deg,held,obs_0,obs_1,obs_2,obs_3,obs_4,obs_5,obs_6,obs_7,action_L,action_R,I_L_cmd_A,I_R_cmd_A,I_L_meas_A,I_R_meas_A
+-0.50,hardware,initial_pitch_release,hw_rel_10deg_01,10.0,1,0.175,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,
+-0.02,hardware,initial_pitch_release,hw_rel_10deg_01,10.0,1,0.175,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,
+0.00,hardware,initial_pitch_release,hw_rel_10deg_01,10.0,0,0.174,-0.02,0.0,0.0,0.0,0.0,0.0,0.0,0.05,0.05,0.06,0.06,,
+0.02,hardware,initial_pitch_release,hw_rel_10deg_01,10.0,0,0.171,-0.09,0.0,0.0,0.0,0.0,0.0,0.0,0.08,0.08,0.09,0.09,,
+0.00,isaac,initial_pitch_release,isaac_rel_10deg_01,10.0,0,0.175,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,
+0.02,isaac,initial_pitch_release,isaac_rel_10deg_01,10.0,0,0.172,-0.08,0.0,0.0,0.0,0.0,0.0,0.0,0.06,0.06,0.07,0.07,,
+0.00,mujoco,initial_pitch_release,mujoco_rel_10deg_01,10.0,0,0.175,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,
+0.02,mujoco,initial_pitch_release,mujoco_rel_10deg_01,10.0,0,0.173,-0.07,0.0,0.0,0.0,0.0,0.0,0.0,0.06,0.06,0.07,0.07,,

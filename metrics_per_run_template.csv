@@ -1,0 +1,7 @@
+platform,scenario,run_id,initial_theta_deg,max_abs_theta_deg,rms_theta_deg,rms_I_A,t_rec_s,x_final_m
+isaac,undisturbed_balance,isaac_bal_01,,,,,,
+isaac,initial_pitch_release,isaac_rel_10deg_01,10.0,,,,,
+mujoco,undisturbed_balance,mujoco_bal_01,,,,,,
+mujoco,initial_pitch_release,mujoco_rel_10deg_01,10.0,,,,,
+hardware,undisturbed_balance,hw_bal_01,,,,,,
+hardware,initial_pitch_release,hw_rel_10deg_01,10.0,,,,,
