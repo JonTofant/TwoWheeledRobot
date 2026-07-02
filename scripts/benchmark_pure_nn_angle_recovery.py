@@ -201,10 +201,19 @@ def _run_angle(policy: torch.nn.Module, env: gym.Env, angle_deg: float) -> list[
     rows_per_env: list[list[dict[str, str]]] = [[] for _ in range(num_envs)]
     alive = torch.ones(num_envs, dtype=torch.bool, device=unwrapped.device)
 
-    # Release-moment row: state as released, before any control action.
-    x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = unwrapped._state_terms()
+    # Release-moment row: state as released, before any control action. Read back
+    # from _state_terms() here rather than the commanded values directly: pitch/
+    # pitch_rate come from the bno080 IMU sensor, whose cache is only refreshed
+    # during a real simulation step, not by write_root_pose_to_sim/
+    # write_root_velocity_to_sim — so right after _release_at_angle() it still
+    # holds stale data from before the release. x_rel/velocity/yaw_error/yaw_rate
+    # come straight from the articulation's own state (updated immediately by
+    # those write_* calls), so they're already correct; only pitch/pitch_rate
+    # need the known commanded values substituted in.
+    x_rel, velocity, _, _, yaw_error, yaw_rate = unwrapped._state_terms()
+    pitch_released = math.radians(angle_deg)
     for i in range(num_envs):
-        raw = [x_rel[i].item(), velocity[i].item(), pitch[i].item(), pitch_rate[i].item(), yaw_error[i].item(), yaw_rate[i].item(), 0.0, 0.0]
+        raw = [x_rel[i].item(), velocity[i].item(), pitch_released, 0.0, yaw_error[i].item(), yaw_rate[i].item(), 0.0, 0.0]
         rows_per_env[i].append(_row(0.0, run_ids[i], angle_deg, raw, [0.0, 0.0], [0.0, 0.0]))
 
     for step in range(steps):
