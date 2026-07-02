@@ -55,14 +55,18 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
 
     # Reward weights: +alive - weighted quadratic penalties. Position penalty
     # is station-keeping: it drives the robot back toward its reset point
-    # rather than letting it drift at low velocity. Kept below rew_velocity's
-    # weight so it doesn't fight pitch recovery under disturbances; retune if
-    # the robot creeps too much or oscillates trying to re-home.
+    # rather than letting it drift at low velocity. At 3.0, a 10 cm drift
+    # costs -0.03/step (negligible next to rew_alive=1.0) but a 30 cm drift
+    # costs -0.27/step (comparable to a ~10 deg pitch excursion) — small
+    # drift is tolerated, larger drift is actively corrected. Previous 0.1
+    # was too weak to matter (10 cm drift cost only -0.001/step) and did not
+    # meaningfully change behavior. Retune down if this starts fighting pitch
+    # recovery under disturbances (oscillating hard trying to re-home).
     rew_alive: float = 1.0
     rew_pitch: float = 10.0
     rew_pitch_rate: float = 0.4
     rew_velocity: float = 0.15
-    rew_position: float = 0.1
+    rew_position: float = 3.0
     rew_yaw_error: float = 0.20
     rew_yaw_rate: float = 0.30
     rew_current: float = 0.005
