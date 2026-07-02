@@ -14,3 +14,8 @@ runs/
 .ruff_cache/
 .mypy_cache/
 _isaac_sim/
+
+# Stray root-owned duplicate export dir left by a container run; contents
+# already live under ExportedPolicy/longer_training/. Undeletable without
+# sudo on the host, so just keep it out of git status.
+ExportedPolicy/exported/
