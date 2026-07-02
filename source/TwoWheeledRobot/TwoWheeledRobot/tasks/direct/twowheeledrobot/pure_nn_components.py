@@ -291,6 +291,7 @@ class BalanceReward:
 
     def compute(
         self,
+        position: torch.Tensor,
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
         velocity: torch.Tensor,
@@ -302,6 +303,7 @@ class BalanceReward:
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         components = {
             "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
+            "position": -self.cfg.rew_position * position.pow(2),
             "pitch": -self.cfg.rew_pitch * pitch.pow(2),
             "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
             "velocity": -self.cfg.rew_velocity * velocity.pow(2),

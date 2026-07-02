@@ -1,4 +1,4 @@
-"""Pure neural-network 50 Hz balance controller task configuration."""
+"""Pure neural-network ~66.7 Hz (15 ms) balance controller task configuration."""
 
 import math
 
@@ -12,6 +12,12 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     observation_space: int = 8
     action_space: int = 2
     state_space: int = 0
+
+    # Override the shared 20 ms control step: this task's control loop must
+    # match the real hardware's 15 ms period. PHYSICS_DT stays 1 ms, so this
+    # yields an exact 15-physics-step control decimation (~66.7 Hz control).
+    # Standup/ResidualLQR are unaffected — they keep sim_params.CONTROL_DECIMATION.
+    decimation: int = 15
 
     episode_length_s: float = 8.0
     floor_initial_pitch_deg: float = 3.0
@@ -32,7 +38,8 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     i_max_a: float = 2.0
     # Default training uses direct NN current commands. Smoothing and hard slew
     # limiting remain configurable for hardware safety tests, but are disabled
-    # by default so PPO can learn the necessary current changes at 50 Hz.
+    # by default so PPO can learn the necessary current changes at the 15 ms
+    # control rate.
     action_smoothing_alpha: float = 0.0
     enable_current_slew_limit: bool = False
     hardware_safe_current_slew_limit: bool = False
@@ -46,13 +53,16 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     reset_pitch_rate_range_radps: float = 0.8
     reset_velocity_range_mps: float = 0.15
 
-    # Reward weights: +alive - weighted quadratic penalties. Position is kept
-    # in the observation but intentionally not penalized or used for termination.
+    # Reward weights: +alive - weighted quadratic penalties. Position penalty
+    # is station-keeping: it drives the robot back toward its reset point
+    # rather than letting it drift at low velocity. Kept below rew_velocity's
+    # weight so it doesn't fight pitch recovery under disturbances; retune if
+    # the robot creeps too much or oscillates trying to re-home.
     rew_alive: float = 1.0
     rew_pitch: float = 10.0
     rew_pitch_rate: float = 0.4
     rew_velocity: float = 0.15
-    rew_position: float = 0.0
+    rew_position: float = 0.1
     rew_yaw_error: float = 0.20
     rew_yaw_rate: float = 0.30
     rew_current: float = 0.005

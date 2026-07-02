@@ -289,6 +289,7 @@ class PureNNBalanceEnv(StandupEnv):
         x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
         reward, reward_components = self._reward.compute(
+            x_rel,
             pitch,
             pitch_rate,
             velocity,
@@ -303,6 +304,7 @@ class PureNNBalanceEnv(StandupEnv):
             "reward": reward.mean(),
             "episode_reward": self._episode_reward.mean(),
             "reward_alive": reward_components["alive"].mean(),
+            "reward_position_penalty": reward_components["position"].mean(),
             "reward_pitch_penalty": reward_components["pitch"].mean(),
             "reward_pitch_rate_penalty": reward_components["pitch_rate"].mean(),
             "reward_velocity_penalty": reward_components["velocity"].mean(),
