@@ -55,6 +55,7 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_invalid_state = torch.zeros_like(self._last_fall)
         self._last_timeout = torch.zeros_like(self._last_fall)
         self._last_terminal_penalty = torch.zeros(self.num_envs, device=self.device)
+        self._last_total_tilt = torch.zeros(self.num_envs, device=self.device)
         self._termination_update_step = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
         self._body_ids = self._resolve_push_body_ids()
 
@@ -174,8 +175,12 @@ class PureNNBalanceEnv(StandupEnv):
         body_z_safe = torch.nan_to_num(body_z, nan=-999.0)
         physics_broken = body_z_safe < 0.02
 
+        projected_gravity = self.bno080.data.projected_gravity_b
+        total_tilt = torch.acos(torch.clamp(-projected_gravity[:, 2], -1.0, 1.0))
         over_pitch = pitch.abs() > math.radians(self.cfg.fall_pitch_threshold_deg)
-        updated_counter = torch.where(over_pitch, self._fall_counter + 1, torch.zeros_like(self._fall_counter))
+        over_total_tilt = total_tilt > math.radians(self.cfg.fall_total_tilt_threshold_deg)
+        over_fall_tilt = over_pitch | over_total_tilt
+        updated_counter = torch.where(over_fall_tilt, self._fall_counter + 1, torch.zeros_like(self._fall_counter))
         self._fall_counter = torch.where(needs_update, updated_counter, self._fall_counter)
         fall = self._fall_counter >= self.cfg.fall_consecutive_steps
         timeout = self.episode_length_buf >= self.max_episode_length - 1
@@ -198,6 +203,7 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_invalid_state = torch.where(needs_update, invalid_state, self._last_invalid_state)
         self._last_timeout = torch.where(needs_update, timeout, self._last_timeout)
         self._last_terminal_penalty = torch.where(needs_update, terminal_penalty, self._last_terminal_penalty)
+        self._last_total_tilt = torch.where(needs_update, total_tilt, self._last_total_tilt)
         self._termination_update_step = torch.where(
             needs_update, self.episode_length_buf, self._termination_update_step
         )
@@ -306,6 +312,7 @@ class PureNNBalanceEnv(StandupEnv):
             "reward_terminal_penalty": reward_components["terminal"].mean(),
             "reward_total": reward_components["total"].mean(),
             "pitch_abs_deg": pitch.abs().mean() * 180.0 / math.pi,
+            "total_tilt_abs_deg": self._last_total_tilt.mean() * 180.0 / math.pi,
             "pitch_rate_abs": pitch_rate.abs().mean(),
             "position_abs": x_rel.abs().mean(),
             "velocity_abs": velocity.abs().mean(),
@@ -378,6 +385,7 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_invalid_state[env_ids_t] = False
         self._last_timeout[env_ids_t] = False
         self._last_terminal_penalty[env_ids_t] = 0.0
+        self._last_total_tilt[env_ids_t] = 0.0
         self._termination_update_step[env_ids_t] = -1
         self._obs_now[env_ids_t] = 0.0
         self._obs_delay[env_ids_t] = 0.0

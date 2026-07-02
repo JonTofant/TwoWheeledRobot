@@ -67,7 +67,11 @@ def validate(torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int
         torch_out = (torch.tanh(torch_policy(obs)) * i_max_a).cpu().numpy()
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
-    onnx_out = session.run(None, {input_name: obs.cpu().numpy().astype(np.float32)})[0]
+    # Isaac Lab's ONNX actor export uses dynamic_axes={}, so the graph's batch
+    # dimension is fixed at 1 (from the traced dummy input) — run one sample
+    # at a time rather than as a single batched call.
+    obs_np = obs.cpu().numpy().astype(np.float32)
+    onnx_out = np.concatenate([session.run(None, {input_name: obs_np[i : i + 1]})[0] for i in range(samples)], axis=0)
     max_error = float(np.max(np.abs(torch_out - onnx_out)))
     if max_error >= tolerance:
         raise SystemExit(f"ONNX validation failed: max_error={max_error:.8g} >= {tolerance:.8g}")

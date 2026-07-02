@@ -17,6 +17,7 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     floor_initial_pitch_deg: float = 3.0
     floor_stop_pitch_deg: float = 25.0
     fall_pitch_threshold_deg: float = 25.0
+    fall_total_tilt_threshold_deg: float = 25.0
     fall_consecutive_steps: int = 5
     position_stop_m: float = 1.0
     success_steps_required: int = 1_000_000_000
@@ -52,9 +53,9 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     rew_pitch_rate: float = 0.4
     rew_velocity: float = 0.15
     rew_position: float = 0.0
-    rew_yaw_error: float = 0.05
-    rew_yaw_rate: float = 0.05
-    rew_current: float = 0.003
+    rew_yaw_error: float = 0.20
+    rew_yaw_rate: float = 0.30
+    rew_current: float = 0.005
     rew_delta_current: float = 0.0
     fall_penalty: float = -100.0
     physics_broken_penalty: float = -100.0
