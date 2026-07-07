@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An Isaac Lab extension (`source/TwoWheeledRobot`) plus standalone scripts for training and evaluating
 control policies for a two-wheeled leg robot (four CyberGear leg joints, two DDSM115 current-controlled
-wheel motors). It targets three registered Isaac Lab tasks and includes an STM32 hardware deployment
+wheel motors). It targets four registered Isaac Lab tasks and includes an STM32 hardware deployment
 path (UART JSON protocol) for the policies trained here.
 
 There is no build step and no automated test suite — verification is done by running Isaac Lab
@@ -22,6 +22,7 @@ Defined in `source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/
 | `Template-Twowheeledrobot-Standup-v0` | `standup_env.py::StandupEnv` | `standup_env_cfg.py` | `agents/rsl_rl_standup_cfg.py` |
 | `Template-Twowheeledrobot-ResidualLQR-v0` | `residual_lqr_env.py::ResidualLqrEnv` (inherits `StandupEnv`) | `residual_lqr_env_cfg.py` | `agents/rsl_rl_residual_lqr_cfg.py` |
 | `Template-Twowheeledrobot-PureNNBalance-v0` | `pure_nn_balance_env.py::PureNNBalanceEnv` (inherits `StandupEnv`) | `pure_nn_balance_env_cfg.py` | `agents/rsl_rl_pure_nn_balance_cfg.py` |
+| `Template-Twowheeledrobot-NNDrive-v0` | `nn_drive_env.py::NNDriveEnv` (inherits `PureNNBalanceEnv`) | `nn_drive_env_cfg.py` | `agents/rsl_rl_nn_drive_cfg.py` |
 
 Never rename these task IDs without preserving compatibility aliases — training runs, checkpoints, and
 scripts reference them by string.
@@ -35,6 +36,12 @@ scripts reference them by string.
   DDSM115 current outputs, curriculum-based disturbances, and sim2real hardening (observation delay,
   yaw drift bias, wheel friction/damping randomization) — see `pure_nn_components.py` for the shared
   observation/reward/disturbance/curriculum building blocks it uses.
+- **NNDrive**: joystick-commanded driving/balancing (velocity + yaw-rate commands with integrated
+  position/heading references, clamped against odometry drift), 6 actions (4 CyberGear stance targets
+  + 2 wheel currents), generated terrain (flat/bumps/inclines), and wider domain randomization
+  (mass/inertia scale, platform COM shift, odometry scale, gyro biases, CyberGear gains, force noise).
+  Obs (18) / action (6) contract is documented in `STM32_DEPLOYMENT.md` and must stay aligned with the
+  STM32 joystick firmware (command slew, `pos_err` clamp at ±0.5 m, CyberGear target slew at 3 rad/s).
 
 ## Commands
 
@@ -57,12 +64,26 @@ Pure NN balance curriculum (five stages, wraps `train.py` as a subprocess, auto-
 python scripts/train_pure_nn_curriculum.py --num_envs 4096 --headless
 ```
 
+NN drive curriculum (five stages: flat balance → commands → pushes → generated terrain; same auto-resume pattern):
+
+```bash
+python scripts/train_nn_drive_curriculum.py --num_envs 4096 --headless
+```
+
+Benchmark an NN drive policy (station keeping, command tracking, pushes/payloads; `--terrain generator` for bumps/slopes):
+
+```bash
+python scripts/benchmark_nn_drive.py --policy <exported policy.pt> --num_envs 64 --headless
+```
+
 Export a trained policy to TorchScript/ONNX (done by `play.py`, or standalone for pure-NN current-output policies):
 
 ```bash
 python scripts/export_pure_nn_current_onnx.py --policy <run>/model_<iter>.pt
 python scripts/validate_onnx_policy.py  # sanity-check exported ONNX vs TorchScript
 ```
+
+For NN drive policies add `--obs-dim 18 --cg-outputs 4` (6 outputs: 4 CyberGear target radians + 2 wheel currents).
 
 Benchmark a pure NN balance policy against required disturbance scenarios:
 

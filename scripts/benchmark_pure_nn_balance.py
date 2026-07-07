@@ -96,6 +96,14 @@ def _terminal_reason_summary(reason: torch.Tensor) -> str:
 
 
 def _scenario_metrics(policy: torch.nn.Module, env, steps: int, pitch_bin: tuple[float, float]) -> dict[str, float | str]:
+    # The whole scenario (reset + stepping) runs under inference_mode: stepping
+    # turns env-internal buffers into inference tensors, and a later reset
+    # outside inference mode would fail on their in-place updates.
+    with torch.inference_mode():
+        return _scenario_metrics_impl(policy, env, steps, pitch_bin)
+
+
+def _scenario_metrics_impl(policy: torch.nn.Module, env, steps: int, pitch_bin: tuple[float, float]) -> dict[str, float | str]:
     unwrapped = env.unwrapped
     env.reset()
     _set_initial_pitch_bin(env, *pitch_bin)
@@ -166,22 +174,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
     if args_cli.include_sine_diagnostic:
         scenarios.append(("sine_diagnostic", 5))
     pitch_bins = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0), (15.0, 20.0)]
+    # Build the environment once: env.close() tears down the simulation app in
+    # this Isaac build, so a make/close per scenario silently stops after the
+    # first scenario. curriculum_stage and benchmark_disturbance_kind are
+    # re-read from the live cfg at env.reset().
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        env = multi_agent_to_single_agent(env)
     for name, stage in scenarios:
-        env_cfg.curriculum_stage = stage
-        env_cfg.benchmark_disturbance_kind = "none" if name == "randomized_motor" else name
+        env.unwrapped.cfg.curriculum_stage = stage
+        env.unwrapped.cfg.benchmark_disturbance_kind = "none" if name == "randomized_motor" else name
         print(f"\n[{name}]")
         for pitch_bin in pitch_bins:
-            env = gym.make(args_cli.task, cfg=env_cfg)
-            if isinstance(env.unwrapped, DirectMARLEnv):
-                env = multi_agent_to_single_agent(env)
             metrics = _scenario_metrics(policy, env, args_cli.num_steps, pitch_bin)
-            env.close()
             print(f"pitch_bin_deg: {pitch_bin[0]:.0f}-{pitch_bin[1]:.0f}")
             for key, value in metrics.items():
                 if isinstance(value, str):
                     print(f"{key}: {value}")
                 else:
                     print(f"{key}: {value:.6g}")
+    env.close()
 
 
 if __name__ == "__main__":

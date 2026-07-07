@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Export an inference-ready pure balance controller ONNX model.
+"""Export an inference-ready pure balance / drive controller ONNX model.
 
 Inputs are the TorchScript and ONNX actor exported by scripts/rsl_rl/play.py.
 This script appends the deployment contract final layer directly in ONNX:
 
-    current_a = tanh(actor(obs)) * I_max
+  Balance policy (2 outputs, default):
+      current_a = tanh(actor(obs)) * I_max
+
+  Drive policy (--cg-outputs 4, 6 outputs total):
+      commands  = tanh(actor(obs)) * [auth, auth, auth, auth, I_max, I_max]
+      → outputs [0-3] are CyberGear position targets in rad (firmware must
+        still clamp to joint limits and slew-limit at cg_target_slew_radps),
+        outputs [4-5] are left/right DDSM115 currents in A.
 
 Appending ONNX nodes avoids retracing Isaac Lab's TorchScript policy exporter,
 which is not traceable as a child module in some Isaac/PyTorch builds.
@@ -18,10 +25,14 @@ from pathlib import Path
 import torch
 
 
-def append_current_output(actor_onnx_path: Path, output_path: Path, i_max_a: float) -> None:
+def _scale_vector(cg_outputs: int, cg_authority_rad: float, i_max_a: float) -> list[float]:
+    return [cg_authority_rad] * cg_outputs + [i_max_a] * 2
+
+
+def append_scaled_output(actor_onnx_path: Path, output_path: Path, scale: list[float], output_name: str) -> None:
+    import numpy as np
     import onnx
     from onnx import TensorProto, helper, numpy_helper
-    import numpy as np
 
     model = onnx.load(str(actor_onnx_path))
     graph = model.graph
@@ -31,17 +42,21 @@ def append_current_output(actor_onnx_path: Path, output_path: Path, i_max_a: flo
     actor_output = graph.output[0]
     actor_output_name = actor_output.name
     tanh_output_name = actor_output_name + "_tanh"
-    scale_name = "i_max_a"
-    current_output_name = "current_a"
+    scale_name = "output_scale"
 
-    graph.node.append(helper.make_node("Tanh", inputs=[actor_output_name], outputs=[tanh_output_name], name="current_tanh"))
-    graph.initializer.append(numpy_helper.from_array(np.array(i_max_a, dtype=np.float32), name=scale_name))
+    graph.node.append(helper.make_node("Tanh", inputs=[actor_output_name], outputs=[tanh_output_name], name="out_tanh"))
+    scale_arr = np.asarray(scale, dtype=np.float32)
+    if len(scale_arr) == 2 and scale_arr[0] == scale_arr[1]:
+        # Keep the legacy scalar initializer for 2-output balance policies so
+        # existing STM32 parsers keep working.
+        scale_arr = np.array(scale_arr[0], dtype=np.float32)
+    graph.initializer.append(numpy_helper.from_array(scale_arr, name=scale_name))
     graph.node.append(
-        helper.make_node("Mul", inputs=[tanh_output_name, scale_name], outputs=[current_output_name], name="current_scale")
+        helper.make_node("Mul", inputs=[tanh_output_name, scale_name], outputs=[output_name], name="out_scale")
     )
 
     output_type = actor_output.type.tensor_type
-    new_output = helper.make_tensor_value_info(current_output_name, TensorProto.FLOAT, None)
+    new_output = helper.make_tensor_value_info(output_name, TensorProto.FLOAT, None)
     new_output.type.tensor_type.shape.CopyFrom(output_type.shape)
     graph.output.remove(actor_output)
     graph.output.append(new_output)
@@ -50,7 +65,9 @@ def append_current_output(actor_onnx_path: Path, output_path: Path, i_max_a: flo
     onnx.save(model, str(output_path))
 
 
-def validate(torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int, tolerance: float, i_max_a: float) -> float:
+def validate(
+    torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int, tolerance: float, scale: list[float]
+) -> float:
     import numpy as np
 
     try:
@@ -62,9 +79,10 @@ def validate(torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int
         ) from exc
 
     torch_policy = torch.jit.load(str(torchscript_path), map_location="cpu").eval()
+    scale_t = torch.tensor(scale, dtype=torch.float32)
     obs = torch.randn(samples, obs_dim, dtype=torch.float32).clamp(-3.0, 3.0)
     with torch.inference_mode():
-        torch_out = (torch.tanh(torch_policy(obs)) * i_max_a).cpu().numpy()
+        torch_out = (torch.tanh(torch_policy(obs)) * scale_t).cpu().numpy()
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
     # Isaac Lab's ONNX actor export uses dynamic_axes={}, so the graph's batch
@@ -79,7 +97,7 @@ def validate(torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export pure NN current policy to ONNX and validate it.")
+    parser = argparse.ArgumentParser(description="Export pure NN current/drive policy to ONNX and validate it.")
     parser.add_argument("--policy", required=True, type=Path, help="TorchScript actor exported as policy.pt")
     parser.add_argument(
         "--actor-onnx",
@@ -88,8 +106,15 @@ def main() -> None:
         help="Raw actor ONNX exported by play.py. Defaults to policy.onnx next to --policy.",
     )
     parser.add_argument("--output", required=True, type=Path, help="Output ONNX path")
-    parser.add_argument("--obs-dim", type=int, default=8)
+    parser.add_argument("--obs-dim", type=int, default=8, help="8 for PureNNBalance, 18 for NNDrive")
     parser.add_argument("--i-max-a", type=float, default=2.0)
+    parser.add_argument(
+        "--cg-outputs",
+        type=int,
+        default=0,
+        help="Number of leading CyberGear outputs (0 for balance policies, 4 for NNDrive).",
+    )
+    parser.add_argument("--cg-authority-rad", type=float, default=0.45, help="CyberGear tanh scale (rad).")
     parser.add_argument("--samples", type=int, default=256)
     parser.add_argument("--tolerance", type=float, default=1.0e-4)
     parser.add_argument(
@@ -103,10 +128,12 @@ def main() -> None:
     if not actor_onnx.is_file():
         raise SystemExit(f"Actor ONNX not found: {actor_onnx}. Run scripts/rsl_rl/play.py first or pass --actor-onnx.")
 
-    append_current_output(actor_onnx, args.output, args.i_max_a)
-    print(f"Exported {args.output}")
+    scale = _scale_vector(args.cg_outputs, args.cg_authority_rad, args.i_max_a)
+    output_name = "commands" if args.cg_outputs > 0 else "current_a"
+    append_scaled_output(actor_onnx, args.output, scale, output_name)
+    print(f"Exported {args.output} (outputs={len(scale)}, scale={scale})")
     try:
-        max_error = validate(args.policy, args.output, args.obs_dim, args.samples, args.tolerance, args.i_max_a)
+        max_error = validate(args.policy, args.output, args.obs_dim, args.samples, args.tolerance, scale)
     except RuntimeError as exc:
         if args.require_validation:
             raise SystemExit(str(exc)) from exc

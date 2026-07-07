@@ -50,6 +50,10 @@ class PureNNBalanceEnv(StandupEnv):
         self._body_force = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._body_torque = torch.zeros_like(self._body_force)
         self._fall_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        # World-z below which physics is considered broken. Flat-ground default
+        # 0.02; terrain-based subclasses set this per env at reset relative to
+        # the spawn height, since generated slopes legitimately go below z=0.
+        self._physics_broken_z = torch.full((self.num_envs,), 0.02, device=self.device)
         self._last_fall = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._last_physics_broken = torch.zeros_like(self._last_fall)
         self._last_invalid_state = torch.zeros_like(self._last_fall)
@@ -173,7 +177,7 @@ class PureNNBalanceEnv(StandupEnv):
         )
         invalid_state = ~finite_state
         body_z_safe = torch.nan_to_num(body_z, nan=-999.0)
-        physics_broken = body_z_safe < 0.02
+        physics_broken = body_z_safe < self._physics_broken_z
 
         projected_gravity = self.bno080.data.projected_gravity_b
         total_tilt = torch.acos(torch.clamp(-projected_gravity[:, 2], -1.0, 1.0))

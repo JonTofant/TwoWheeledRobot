@@ -285,6 +285,257 @@ class DisturbanceGenerator:
         return force[:, 0]
 
 
+class CommandGenerator:
+    """Joystick-style velocity / yaw-rate commands with slew limits and integrated references.
+
+    Mirrors exactly what the STM32 firmware must do with the joystick input:
+
+        v_cmd, w_cmd     <- joystick, slew-limited
+        pos_ref          += v_cmd * dt          (longitudinal odometry reference, m)
+        yaw_ref          += w_cmd * dt          (heading reference, rad)
+        pos_err          = clamp(x_odom - pos_ref, +-pos_err_clamp)
+        yaw_err          = wrap(yaw - yaw_ref)
+
+    The clamp on ``pos_err`` is the anti-windup that keeps real-world odometry
+    drift from pushing the observation out of the training distribution.
+    """
+
+    def __init__(self, cfg, num_envs: int, device: torch.device):
+        self.cfg = cfg
+        self.device = device
+        self.num_envs = num_envs
+        self.v_target = torch.zeros(num_envs, device=device)
+        self.w_target = torch.zeros(num_envs, device=device)
+        self.v_cmd = torch.zeros(num_envs, device=device)
+        self.w_cmd = torch.zeros(num_envs, device=device)
+        self.pos_ref = torch.zeros(num_envs, device=device)
+        self.yaw_ref = torch.zeros(num_envs, device=device)
+        self.still_episode = torch.zeros(num_envs, device=device, dtype=torch.bool)
+        self.next_resample_step = torch.zeros(num_envs, device=device, dtype=torch.long)
+
+    @property
+    def forced(self) -> bool:
+        # Read live so benchmarks can flip forced commands between env.reset()
+        # calls without rebuilding the environment.
+        return self.cfg.forced_command_mode == "fixed"
+
+    def _stage_limits(self, stage: int) -> tuple[float, float]:
+        idx = max(0, min(stage - 1, len(self.cfg.cmd_stage_velocity_max_mps) - 1))
+        return self.cfg.cmd_stage_velocity_max_mps[idx], self.cfg.cmd_stage_yaw_rate_max_radps[idx]
+
+    def _sample_targets(self, env_ids: torch.Tensor, stage: int) -> None:
+        n = len(env_ids)
+        v_max, w_max = self._stage_limits(stage)
+        if self.forced:
+            self.v_target[env_ids] = self.cfg.forced_velocity_cmd_mps
+            self.w_target[env_ids] = self.cfg.forced_yaw_rate_cmd_radps
+            return
+        v = torch.empty(n, device=self.device).uniform_(-v_max, v_max)
+        w = torch.empty(n, device=self.device).uniform_(-w_max, w_max)
+        # A slice of resamples commands zero on one or both axes so the policy
+        # regularly practices pure driving, pure turning, and full stops.
+        zero_v = torch.rand(n, device=self.device) < self.cfg.cmd_zero_axis_prob
+        zero_w = torch.rand(n, device=self.device) < self.cfg.cmd_zero_axis_prob
+        v = torch.where(zero_v, torch.zeros_like(v), v)
+        w = torch.where(zero_w, torch.zeros_like(w), w)
+        self.v_target[env_ids] = v
+        self.w_target[env_ids] = w
+        still = self.still_episode[env_ids]
+        zeros = torch.zeros(n, device=self.device)
+        self.v_target[env_ids] = torch.where(still, zeros, self.v_target[env_ids])
+        self.w_target[env_ids] = torch.where(still, zeros, self.w_target[env_ids])
+
+    def _schedule_resample(self, env_ids: torch.Tensor, current_step: torch.Tensor, dt: float) -> None:
+        n = len(env_ids)
+        lo, hi = self.cfg.cmd_resample_s_range
+        interval = torch.empty(n, device=self.device).uniform_(lo, hi)
+        self.next_resample_step[env_ids] = current_step + (interval / dt).to(torch.long).clamp(min=1)
+
+    def reset(self, env_ids: torch.Tensor, stage: int, dt: float, initial_yaw: torch.Tensor) -> None:
+        n = len(env_ids)
+        self.v_cmd[env_ids] = 0.0
+        self.w_cmd[env_ids] = 0.0
+        self.pos_ref[env_ids] = 0.0
+        self.yaw_ref[env_ids] = initial_yaw
+        self.still_episode[env_ids] = torch.rand(n, device=self.device) < self.cfg.cmd_still_episode_prob
+        if self.forced:
+            self.still_episode[env_ids] = False
+        self._sample_targets(env_ids, stage)
+        self._schedule_resample(env_ids, torch.zeros(n, device=self.device, dtype=torch.long), dt)
+        # Hold zero commands for a short settling window at episode start.
+        settle_steps = int(self.cfg.cmd_settle_s / dt)
+        self.next_resample_step[env_ids] = self.next_resample_step[env_ids].clamp(min=settle_steps)
+
+    def step(self, step_buf: torch.Tensor, stage: int, dt: float) -> None:
+        """Advance commands and references by one control step."""
+        due = step_buf >= self.next_resample_step
+        due_ids = torch.nonzero(due, as_tuple=False).squeeze(-1)
+        if len(due_ids) > 0:
+            self._sample_targets(due_ids, stage)
+            self._schedule_resample(due_ids, step_buf[due_ids], dt)
+        # Settling window: force zero targets before cmd_settle_s.
+        settle = step_buf < int(self.cfg.cmd_settle_s / dt)
+        v_target = torch.where(settle, torch.zeros_like(self.v_target), self.v_target)
+        w_target = torch.where(settle, torch.zeros_like(self.w_target), self.w_target)
+        dv = (v_target - self.v_cmd).clamp(-self.cfg.cmd_velocity_slew_mps2 * dt, self.cfg.cmd_velocity_slew_mps2 * dt)
+        dw = (w_target - self.w_cmd).clamp(-self.cfg.cmd_yaw_slew_radps2 * dt, self.cfg.cmd_yaw_slew_radps2 * dt)
+        self.v_cmd = self.v_cmd + dv
+        self.w_cmd = self.w_cmd + dw
+        self.pos_ref = self.pos_ref + self.v_cmd * dt
+        self.yaw_ref = self.yaw_ref + self.w_cmd * dt
+
+    def position_error(self, x_odom: torch.Tensor) -> torch.Tensor:
+        clamp = self.cfg.cmd_pos_err_clamp_m
+        return (x_odom - self.pos_ref).clamp(-clamp, clamp)
+
+    def yaw_error(self, yaw: torch.Tensor) -> torch.Tensor:
+        return wrap_angle_rad(yaw - self.yaw_ref)
+
+
+class DriveObservationBuilder:
+    """Build the 18-value drive observation with fixed normalization.
+
+    Layout (all values BEFORE dividing by ``drive_observation_scale``):
+        [0]  pos_err          m,  clamp +-cmd_pos_err_clamp_m
+        [1]  velocity         m/s (wheel odometry mean)
+        [2]  pitch            rad
+        [3]  pitch_rate       rad/s
+        [4]  yaw_err          rad, wrapped
+        [5]  yaw_rate         rad/s
+        [6]  velocity_cmd     m/s
+        [7]  yaw_rate_cmd     rad/s
+        [8-11]  cg_pos_norm   CyberGear extension fraction in [-1, 1] (fl, fr, bl, br)
+        [12-13] prev wheel current A (left, right)
+        [14-17] prev cg action, tanh-squashed in [-1, 1] (fl, fr, bl, br)
+    """
+
+    def __init__(self, cfg, device: torch.device):
+        self.cfg = cfg
+        self.scale = torch.tensor(cfg.drive_observation_scale, device=device, dtype=torch.float32).view(1, -1)
+        if len(cfg.drive_observation_scale) != cfg.observation_space:
+            raise ValueError("drive_observation_scale length must match observation_space")
+
+    def build(
+        self,
+        pos_err: torch.Tensor,
+        velocity: torch.Tensor,
+        pitch: torch.Tensor,
+        pitch_rate: torch.Tensor,
+        yaw_err: torch.Tensor,
+        yaw_rate: torch.Tensor,
+        velocity_cmd: torch.Tensor,
+        yaw_rate_cmd: torch.Tensor,
+        cg_pos_norm: torch.Tensor,
+        previous_current: torch.Tensor,
+        previous_cg_action: torch.Tensor,
+    ) -> torch.Tensor:
+        scalars = torch.stack(
+            [pos_err, velocity, pitch, pitch_rate, yaw_err, yaw_rate, velocity_cmd, yaw_rate_cmd], dim=1
+        )
+        obs = torch.cat([scalars, cg_pos_norm, previous_current, previous_cg_action], dim=1)
+        return torch.nan_to_num(obs / self.scale, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
+
+
+class CyberGearStanceProcessor:
+    """Convert raw CyberGear actions into slew-limited joint position targets.
+
+    Deployment contract (must match the STM32 firmware):
+        target = clamp(nominal + tanh(a) * authority, joint_lo, joint_hi)
+        target = slew_limit(target, cg_target_slew_radps)
+
+    A per-episode calibration bias models real CyberGear zero-offset error.
+    """
+
+    def __init__(self, cfg, num_envs: int, device: torch.device):
+        self.cfg = cfg
+        self.device = device
+        self.tanh_action = torch.zeros(num_envs, 4, device=device)
+        self.prev_tanh_action = torch.zeros(num_envs, 4, device=device)
+        self.applied_target = torch.zeros(num_envs, 4, device=device)
+        self.calib_bias = torch.zeros(num_envs, 4, device=device)
+
+    def reset(self, env_ids: torch.Tensor) -> None:
+        n = len(env_ids)
+        self.tanh_action[env_ids] = 0.0
+        self.prev_tanh_action[env_ids] = 0.0
+        self.applied_target[env_ids] = 0.0
+        lo, hi = self.cfg.cg_calib_bias_rad_range
+        self.calib_bias[env_ids] = torch.empty(n, 4, device=self.device).uniform_(lo, hi)
+
+    def process(
+        self,
+        raw_cg_actions: torch.Tensor,
+        joint_lo: torch.Tensor,
+        joint_hi: torch.Tensor,
+        dt: float,
+    ) -> torch.Tensor:
+        self.prev_tanh_action = self.tanh_action.clone()
+        self.tanh_action = torch.tanh(raw_cg_actions)
+        desired = (self.tanh_action * self.cfg.cg_action_authority_rad + self.calib_bias).clamp(
+            min=joint_lo, max=joint_hi
+        )
+        max_step = self.cfg.cg_target_slew_radps * dt
+        delta = (desired - self.applied_target).clamp(-max_step, max_step)
+        self.applied_target = self.applied_target + delta
+        return self.applied_target
+
+    def delta_tanh(self) -> torch.Tensor:
+        return self.tanh_action - self.prev_tanh_action
+
+
+class DriveReward:
+    """Command-tracking reward for the NN drive task.
+
+    Positive tracking terms (exp kernels) reward following the joystick;
+    quadratic penalties keep pitch, position drift, and actuation smooth.
+    Pitch is deliberately weighted lower than in the balance task because the
+    equilibrium pitch is nonzero on inclines and while accelerating.
+    """
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def compute(
+        self,
+        pos_err: torch.Tensor,
+        velocity: torch.Tensor,
+        pitch: torch.Tensor,
+        pitch_rate: torch.Tensor,
+        yaw_err: torch.Tensor,
+        yaw_rate: torch.Tensor,
+        velocity_cmd: torch.Tensor,
+        yaw_rate_cmd: torch.Tensor,
+        current: torch.Tensor,
+        delta_current: torch.Tensor,
+        cg_tanh: torch.Tensor,
+        cg_delta_tanh: torch.Tensor,
+        terminal_penalty: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        vel_err = velocity - velocity_cmd
+        yaw_rate_err = yaw_rate - yaw_rate_cmd
+        components = {
+            "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
+            "vel_track": self.cfg.rew_vel_track * torch.exp(-vel_err.pow(2) / self.cfg.vel_track_sigma**2),
+            "yaw_rate_track": self.cfg.rew_yaw_rate_track
+            * torch.exp(-yaw_rate_err.pow(2) / self.cfg.yaw_rate_track_sigma**2),
+            "position": -self.cfg.rew_position * pos_err.pow(2),
+            "yaw_error": -self.cfg.rew_yaw_error * yaw_err.pow(2),
+            "pitch": -self.cfg.rew_pitch * pitch.pow(2),
+            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
+            "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
+            "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
+            "cg_pos": -self.cfg.rew_cg_pos * cg_tanh.pow(2).sum(dim=1),
+            "cg_rate": -self.cfg.rew_cg_rate * cg_delta_tanh.pow(2).sum(dim=1),
+        }
+        if terminal_penalty is None:
+            terminal_penalty = torch.zeros_like(pitch)
+        components["terminal"] = terminal_penalty
+        reward = sum(components.values())
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=3.0, neginf=-100.0).clamp(-100.0, 3.0)
+        components["total"] = reward
+        return reward, components
+
+
 class BalanceReward:
     def __init__(self, cfg):
         self.cfg = cfg
