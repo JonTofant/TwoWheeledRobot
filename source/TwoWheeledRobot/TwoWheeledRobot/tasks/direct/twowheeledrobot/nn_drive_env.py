@@ -35,6 +35,7 @@ from .pure_nn_components import (
     DriveObservationBuilder,
     DriveReward,
     pitch_from_projected_gravity,
+    roll_from_projected_gravity,
     yaw_from_quat_wxyz,
 )
 from .residual_lqr_env import R_WHEEL
@@ -253,6 +254,8 @@ class NNDriveEnv(PureNNBalanceEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
+        roll = roll_from_projected_gravity(self.bno080.data.projected_gravity_b)
+        roll_rate = self.bno080.data.ang_vel_b[:, 1]
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
         pos_err = self._commands.position_error(x_rel)
         reward, components = self._drive_reward.compute(
@@ -260,6 +263,8 @@ class NNDriveEnv(PureNNBalanceEnv):
             velocity,
             pitch,
             pitch_rate,
+            roll,
+            roll_rate,
             yaw_error,
             yaw_rate,
             self._commands.v_cmd,
@@ -276,6 +281,7 @@ class NNDriveEnv(PureNNBalanceEnv):
             "episode_reward": self._episode_reward.mean(),
             **{f"reward_{name}": value.mean() for name, value in components.items()},
             "pitch_abs_deg": pitch.abs().mean() * 180.0 / math.pi,
+            "roll_abs_deg": roll.abs().mean() * 180.0 / math.pi,
             "total_tilt_abs_deg": self._last_total_tilt.mean() * 180.0 / math.pi,
             "vel_err_abs": (velocity - self._commands.v_cmd).abs().mean(),
             "yaw_rate_err_abs": (yaw_rate - self._commands.w_cmd).abs().mean(),

@@ -150,6 +150,8 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     rew_yaw_error: float = 0.5
     rew_pitch: float = 4.0                     # lower than balance task: slopes need lean
     rew_pitch_rate: float = 0.3
+    rew_roll: float = 8.0                      # no legitimate reason to lean sideways, unlike pitch
+    rew_roll_rate: float = 0.3
     rew_current: float = 0.01
     rew_delta_current: float = 0.05            # actuation smoothness — matters on hardware
     rew_cg_pos: float = 0.05

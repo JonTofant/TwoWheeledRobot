@@ -22,6 +22,7 @@ from .pure_nn_components import (
     DisturbanceGenerator,
     NormalizedObservationBuilder,
     pitch_from_projected_gravity,
+    roll_from_projected_gravity,
     wrap_angle_rad,
     yaw_from_quat_wxyz,
 )
@@ -291,11 +292,15 @@ class PureNNBalanceEnv(StandupEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
+        roll = roll_from_projected_gravity(self.bno080.data.projected_gravity_b)
+        roll_rate = self.bno080.data.ang_vel_b[:, 1]
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
         reward, reward_components = self._reward.compute(
             x_rel,
             pitch,
             pitch_rate,
+            roll,
+            roll_rate,
             velocity,
             yaw_error,
             yaw_rate,
@@ -311,6 +316,8 @@ class PureNNBalanceEnv(StandupEnv):
             "reward_position_penalty": reward_components["position"].mean(),
             "reward_pitch_penalty": reward_components["pitch"].mean(),
             "reward_pitch_rate_penalty": reward_components["pitch_rate"].mean(),
+            "reward_roll_penalty": reward_components["roll"].mean(),
+            "reward_roll_rate_penalty": reward_components["roll_rate"].mean(),
             "reward_velocity_penalty": reward_components["velocity"].mean(),
             "reward_yaw_error_penalty": reward_components["yaw_error"].mean(),
             "reward_yaw_rate_penalty": reward_components["yaw_rate"].mean(),
@@ -320,6 +327,8 @@ class PureNNBalanceEnv(StandupEnv):
             "pitch_abs_deg": pitch.abs().mean() * 180.0 / math.pi,
             "total_tilt_abs_deg": self._last_total_tilt.mean() * 180.0 / math.pi,
             "pitch_rate_abs": pitch_rate.abs().mean(),
+            "roll_abs_deg": roll.abs().mean() * 180.0 / math.pi,
+            "roll_rate_abs": roll_rate.abs().mean(),
             "position_abs": x_rel.abs().mean(),
             "velocity_abs": velocity.abs().mean(),
             "yaw_error_abs": yaw_error.abs().mean(),

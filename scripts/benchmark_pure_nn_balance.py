@@ -125,6 +125,8 @@ def _scenario_metrics_impl(policy: torch.nn.Module, env, steps: int, pitch_bin: 
                 dones = terminated | truncated
             else:
                 obs, _, dones, _ = step_out
+            if isinstance(obs, dict):
+                obs = obs["policy"]
         _, velocity, pitch, _, _, _ = unwrapped._state_terms()
         current = unwrapped._action_processor.command_current
         pitch_hist.append(pitch)

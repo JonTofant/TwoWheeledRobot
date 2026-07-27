@@ -65,6 +65,8 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     rew_alive: float = 1.0
     rew_pitch: float = 10.0
     rew_pitch_rate: float = 0.4
+    rew_roll: float = 10.0
+    rew_roll_rate: float = 0.4
     rew_velocity: float = 0.15
     rew_position: float = 3.0
     rew_yaw_error: float = 0.20

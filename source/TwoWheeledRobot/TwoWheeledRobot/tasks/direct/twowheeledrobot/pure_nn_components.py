@@ -11,6 +11,10 @@ def pitch_from_projected_gravity(projected_gravity_body: torch.Tensor) -> torch.
     return torch.atan2(projected_gravity_body[:, 1], -projected_gravity_body[:, 2])
 
 
+def roll_from_projected_gravity(projected_gravity_body: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(projected_gravity_body[:, 0], -projected_gravity_body[:, 2])
+
+
 def yaw_from_quat_wxyz(quat_wxyz: torch.Tensor) -> torch.Tensor:
     w, x, y, z = quat_wxyz.unbind(dim=1)
     return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
@@ -501,6 +505,8 @@ class DriveReward:
         velocity: torch.Tensor,
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
+        roll: torch.Tensor,
+        roll_rate: torch.Tensor,
         yaw_err: torch.Tensor,
         yaw_rate: torch.Tensor,
         velocity_cmd: torch.Tensor,
@@ -522,6 +528,8 @@ class DriveReward:
             "yaw_error": -self.cfg.rew_yaw_error * yaw_err.pow(2),
             "pitch": -self.cfg.rew_pitch * pitch.pow(2),
             "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
+            "roll": -self.cfg.rew_roll * roll.pow(2),
+            "roll_rate": -self.cfg.rew_roll_rate * roll_rate.pow(2),
             "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
             "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
             "cg_pos": -self.cfg.rew_cg_pos * cg_tanh.pow(2).sum(dim=1),
@@ -545,6 +553,8 @@ class BalanceReward:
         position: torch.Tensor,
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
+        roll: torch.Tensor,
+        roll_rate: torch.Tensor,
         velocity: torch.Tensor,
         yaw_error: torch.Tensor,
         yaw_rate: torch.Tensor,
@@ -557,6 +567,8 @@ class BalanceReward:
             "position": -self.cfg.rew_position * position.pow(2),
             "pitch": -self.cfg.rew_pitch * pitch.pow(2),
             "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
+            "roll": -self.cfg.rew_roll * roll.pow(2),
+            "roll_rate": -self.cfg.rew_roll_rate * roll_rate.pow(2),
             "velocity": -self.cfg.rew_velocity * velocity.pow(2),
             "yaw_error": -self.cfg.rew_yaw_error * yaw_error.pow(2),
             "yaw_rate": -self.cfg.rew_yaw_rate * yaw_rate.pow(2),
