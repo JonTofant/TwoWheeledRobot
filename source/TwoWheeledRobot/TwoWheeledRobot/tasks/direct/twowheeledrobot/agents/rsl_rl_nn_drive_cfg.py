@@ -31,12 +31,21 @@ class NNDrivePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.004,
+        # 0.004 made the exploration std run away: across the 2026-07-09 five-stage
+        # curriculum Policy/mean_noise_std grew 0.17 -> 2.04 (tanh-saturating,
+        # effectively bang-bang exploration), and pos_err/pitch/roll flatlined at
+        # 0.23 m / 6 deg / 6 deg from stage 2 on. With ~1.3 reward/step the entropy
+        # bonus outweighed the shaping gradient on log_std. Keep this low enough
+        # that precision pays; watch Policy/mean_noise_std stays under ~0.4.
+        entropy_coef=0.0005,
         num_learning_epochs=4,
         num_mini_batches=4,
         learning_rate=5.0e-4,
         schedule="adaptive",
-        gamma=0.995,
+        # 0.995 = 3 s effective horizon at 66.7 Hz, too short to value slow
+        # station-keeping drift. 0.998 = 7.5 s, matching the timescale on which
+        # the hardware robot walks away from its start point.
+        gamma=0.998,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=0.5,

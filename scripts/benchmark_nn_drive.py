@@ -36,6 +36,7 @@ import math
 import gymnasium as gym
 import torch
 import TwoWheeledRobot.tasks  # noqa: F401
+from TwoWheeledRobot.tasks.direct.twowheeledrobot.pure_nn_components import roll_from_projected_gravity
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -82,8 +83,12 @@ def _scenario_metrics_impl(policy: torch.nn.Module, env, steps: int, settle_step
     vel_err_sq_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     yaw_rate_err_sq_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     pitch_sq_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
+    roll_sq_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     current_sq_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     pos_err_abs_max = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
+    pos_err_abs_final = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
+    speed_abs_sum = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
+    world_drift_final = torch.zeros(unwrapped.num_envs, device=unwrapped.device)
     tracked_steps = 0
 
     for step in range(steps):
@@ -105,12 +110,26 @@ def _scenario_metrics_impl(policy: torch.nn.Module, env, steps: int, settle_step
             yaw_rate_err_sq = (yaw_rate - unwrapped._commands.w_cmd).pow(2)
             vel_err_sq_sum += torch.where(alive, vel_err_sq, torch.zeros_like(velocity))
             yaw_rate_err_sq_sum += torch.where(alive, yaw_rate_err_sq, torch.zeros_like(yaw_rate))
+            roll = roll_from_projected_gravity(unwrapped.bno080.data.projected_gravity_b)
             pitch_sq_sum += torch.where(alive, pitch.pow(2), torch.zeros_like(pitch))
+            roll_sq_sum += torch.where(alive, roll.pow(2), torch.zeros_like(roll))
             current_sq_sum += torch.where(
                 alive, unwrapped._action_processor.command_current.pow(2).mean(dim=1), torch.zeros_like(velocity)
             )
-            pos_err = unwrapped._commands.position_error(x_rel)
+            # Ground truth, immune to any reference/clamp change: how fast the
+            # robot actually moved, and how far it actually ended up from spawn.
+            speed_abs_sum += torch.where(alive, velocity.abs(), torch.zeros_like(velocity))
+            world_drift = torch.linalg.vector_norm(
+                unwrapped.robot.data.root_pos_w[:, :2] - unwrapped._spawn_pos_xy, dim=1
+            )
+            world_drift_final = torch.where(alive, world_drift, world_drift_final)
+            # pos_err is measured against the command reference. Since reference
+            # anti-windup bounds it to +-cmd_pos_err_clamp_m by construction, it
+            # can no longer be read as "how far the robot drove away" — use
+            # world_drift_m/achieved_speed_mps for that.
+            pos_err = unwrapped._commands.position_error_raw(x_rel)
             pos_err_abs_max = torch.where(alive, torch.maximum(pos_err_abs_max, pos_err.abs()), pos_err_abs_max)
+            pos_err_abs_final = torch.where(alive, pos_err.abs(), pos_err_abs_final)
         survival = torch.where(alive, torch.full_like(survival, (step + 1) * dt), survival)
         # The in-step reset clears _last_fall for done envs before env.step()
         # returns, so use the terminated flag (fall | physics_broken | invalid).
@@ -124,7 +143,13 @@ def _scenario_metrics_impl(policy: torch.nn.Module, env, steps: int, settle_step
         "rms_vel_err_mps": torch.sqrt(vel_err_sq_sum / denom).mean().item(),
         "rms_yaw_rate_err_radps": torch.sqrt(yaw_rate_err_sq_sum / denom).mean().item(),
         "rms_pitch_deg": (torch.sqrt(pitch_sq_sum / denom).mean() * 180.0 / math.pi).item(),
+        "rms_roll_deg": (torch.sqrt(roll_sq_sum / denom).mean() * 180.0 / math.pi).item(),
         "max_pos_err_m": pos_err_abs_max.mean().item(),
+        # Error against the command reference. Bounded by anti-windup, so read
+        # world_drift_m for actual displacement, not this.
+        "final_pos_err_m": pos_err_abs_final.mean().item(),
+        "achieved_speed_mps": (speed_abs_sum / denom).mean().item(),
+        "world_drift_m": world_drift_final.mean().item(),
         "rms_current_a": torch.sqrt(current_sq_sum / denom).mean().item(),
     }
 

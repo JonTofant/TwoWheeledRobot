@@ -141,16 +141,38 @@ DIST_PAYLOAD_PUSH = 4
 DIST_SLOPE = 5
 DIST_SINE_DIAGNOSTIC = 6
 
+# Platform body-frame axis indices for external forces.
+#
+# Verified in sim (2026-07-28): driving both wheels forward moves the robot
+# along +Y, and the platform body quaternion is identity, so body axes are world
+# axes. Y is therefore the fore/aft axis (the one the robot can answer by
+# driving) and X is lateral (which a differential drive cannot correct — it can
+# only resist it through wheel friction).
+#
+# These were previously transposed: the +-8 N "human push" went to index 0 and
+# so was applied sideways, while the fore/aft push the robot can actually
+# recover from only ever got the +-2.5 N "lateral" magnitude.
+AXIS_LATERAL = 0
+AXIS_FOREAFT = 1
+AXIS_VERTICAL = 2
+# Torque axes: pitch is rotation about the wheel axle (lateral), yaw about up.
+AXIS_TORQUE_PITCH = AXIS_LATERAL
+AXIS_TORQUE_YAW = AXIS_VERTICAL
+
 
 class DisturbanceGenerator:
     """Sample physically motivated sim2real disturbances.
 
     Disturbances are represented as force and torque events on the selected
     robot body/platform. Components are supplied directly to Isaac Lab's
-    ``set_external_force_and_torque`` tensor API without frame conversion. In
-    this task convention, +X is the main forward/back push axis, +Y is lateral,
-    torque X is the pitch-axis payload/COM-shift equivalent, and torque Z is yaw
-    torque from an off-center human push.
+    ``set_external_force_and_torque`` tensor API without frame conversion — the
+    API applies them in the body-local frame, which for the platform is the
+    world frame (identity quaternion at spawn).
+
+    Axes are named via the AXIS_* constants above rather than written as bare
+    indices, because the fore/aft and lateral force components were transposed
+    here for the whole history of the task. See those constants for the sim
+    measurement that pins the convention down.
     """
 
     def __init__(self, cfg, num_envs: int, device: torch.device):
@@ -205,9 +227,10 @@ class DisturbanceGenerator:
         if len(payload_env_ids) > 0:
             self._sample_payload(payload_env_ids, dt=dt)
         if len(slope_env_ids) > 0:
-            self.slope_force[slope_env_ids, 0] = torch.empty(len(slope_env_ids), device=self.device).uniform_(
-                *self.cfg.slope_fx_n_range
-            )
+            # A slope biases the robot fore/aft, never sideways.
+            self.slope_force[slope_env_ids, AXIS_FOREAFT] = torch.empty(
+                len(slope_env_ids), device=self.device
+            ).uniform_(*self.cfg.slope_fx_n_range)
         self.sine_amp[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.sine_force_n_range)
         self.sine_freq[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.sine_frequency_hz_range)
 
@@ -225,10 +248,10 @@ class DisturbanceGenerator:
         torque = torque + torch.where(push_1.view(-1, 1), self.push_torque_1, torch.zeros_like(torque))
         torque = torque + torch.where(push_2.view(-1, 1), self.push_torque_2, torch.zeros_like(torque))
         torque = torque + torch.where(payload.view(-1, 1), self.payload_torque, torch.zeros_like(torque))
-        force[:, 0] = torch.where(
+        force[:, AXIS_FOREAFT] = torch.where(
             sine,
-            force[:, 0] + self.sine_amp * torch.sin(2.0 * math.pi * self.sine_freq * t),
-            force[:, 0],
+            force[:, AXIS_FOREAFT] + self.sine_amp * torch.sin(2.0 * math.pi * self.sine_freq * t),
+            force[:, AXIS_FOREAFT],
         )
         return force, torque
 
@@ -263,9 +286,12 @@ class DisturbanceGenerator:
         duration = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_duration_s_range)
         force = torch.zeros(n, 3, device=self.device)
         torque = torch.zeros(n, 3, device=self.device)
-        force[:, 0] = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_fx_n_range)
-        force[:, 1] = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_fy_n_range)
-        torque[:, 2] = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_yaw_torque_nm_range)
+        # fx is the fore/aft shove, fy the sideways one — see AXIS_* constants.
+        force[:, AXIS_FOREAFT] = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_fx_n_range)
+        force[:, AXIS_LATERAL] = torch.empty(n, device=self.device).uniform_(*self.cfg.human_push_fy_n_range)
+        torque[:, AXIS_TORQUE_YAW] = torch.empty(n, device=self.device).uniform_(
+            *self.cfg.human_push_yaw_torque_nm_range
+        )
         start_step = torch.ceil(start / dt - 1.0e-9).to(torch.long)
         stop_step = start_step + torch.ceil(duration / dt).to(torch.long)
         if first:
@@ -279,14 +305,14 @@ class DisturbanceGenerator:
         n = len(env_ids)
         start = torch.empty(n, device=self.device).uniform_(*self.cfg.payload_start_s_range)
         self.payload_start[env_ids] = torch.ceil(start / dt - 1.0e-9).to(torch.long)
-        self.payload_torque[env_ids, 0] = torch.empty(n, device=self.device).uniform_(
+        self.payload_torque[env_ids, AXIS_TORQUE_PITCH] = torch.empty(n, device=self.device).uniform_(
             *self.cfg.payload_pitch_torque_nm_range
         )
 
     def force(self, step: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """Compatibility helper for older callers; returns only force."""
+        """Compatibility helper for older callers; returns the fore/aft force."""
         force, _ = self.force_and_torque(step, t)
-        return force[:, 0]
+        return force[:, AXIS_FOREAFT]
 
 
 class CommandGenerator:
@@ -370,8 +396,20 @@ class CommandGenerator:
         settle_steps = int(self.cfg.cmd_settle_s / dt)
         self.next_resample_step[env_ids] = self.next_resample_step[env_ids].clamp(min=settle_steps)
 
-    def step(self, step_buf: torch.Tensor, stage: int, dt: float) -> None:
-        """Advance commands and references by one control step."""
+    def step(
+        self,
+        step_buf: torch.Tensor,
+        stage: int,
+        dt: float,
+        x_odom: torch.Tensor | None = None,
+        yaw: torch.Tensor | None = None,
+    ) -> None:
+        """Advance commands and references by one control step.
+
+        Pass ``x_odom``/``yaw`` to enable reference anti-windup (see
+        ``_apply_reference_anti_windup``). They are optional so older callers
+        that only advance the commands keep working.
+        """
         due = step_buf >= self.next_resample_step
         due_ids = torch.nonzero(due, as_tuple=False).squeeze(-1)
         if len(due_ids) > 0:
@@ -387,13 +425,53 @@ class CommandGenerator:
         self.w_cmd = self.w_cmd + dw
         self.pos_ref = self.pos_ref + self.v_cmd * dt
         self.yaw_ref = self.yaw_ref + self.w_cmd * dt
+        self._apply_reference_anti_windup(x_odom, yaw)
+
+    def _apply_reference_anti_windup(self, x_odom: torch.Tensor | None, yaw: torch.Tensor | None) -> None:
+        """Back-calculate the references so they can never outrun the robot.
+
+        ``pos_ref``/``yaw_ref`` integrate the joystick command, but the robot
+        cannot always follow it — the measured yaw-rate ceiling is ~0.75 rad/s
+        against commands up to 2.0 rad/s. Without this, the reference runs away
+        forever: ``pos_err`` pins at its clamp (a permanent, unclearable "you are
+        behind" signal) and ``yaw_err`` sweeps past +-pi and *wraps*, which is a
+        step discontinuity in the observation. Measured effect of the wrap: 100%
+        fall rate at a sustained 1.2 rad/s, versus 20% with the reference pinned.
+
+        This is standard integrator anti-windup by back-calculation, and it is
+        the same job the ``cmd_pos_err_clamp_m`` clamp was doing on the
+        observation — except done at the source, so the error never wraps and
+        the reference stays recoverable.
+        """
+        if x_odom is not None:
+            pos_clamp = self.cfg.cmd_pos_err_clamp_m
+            pos_err = x_odom - self.pos_ref
+            self.pos_ref = self.pos_ref + (pos_err - pos_err.clamp(-pos_clamp, pos_clamp))
+        if yaw is not None:
+            yaw_clamp = self.cfg.cmd_yaw_err_clamp_rad
+            yaw_err = wrap_angle_rad(yaw - self.yaw_ref)
+            self.yaw_ref = self.yaw_ref + (yaw_err - yaw_err.clamp(-yaw_clamp, yaw_clamp))
 
     def position_error(self, x_odom: torch.Tensor) -> torch.Tensor:
         clamp = self.cfg.cmd_pos_err_clamp_m
         return (x_odom - self.pos_ref).clamp(-clamp, clamp)
 
+    def position_error_raw(self, x_odom: torch.Tensor) -> torch.Tensor:
+        """Unclamped position error — reward-only, never fed to the policy.
+
+        The observation must stay clamped for firmware parity, but a clamped
+        reward is flat beyond +-cmd_pos_err_clamp_m, so a policy that has already
+        drifted that far gets no incentive to come back. The reward uses this
+        raw error to keep a pull toward home at any drift distance.
+        """
+        return x_odom - self.pos_ref
+
     def yaw_error(self, yaw: torch.Tensor) -> torch.Tensor:
-        return wrap_angle_rad(yaw - self.yaw_ref)
+        # Anti-windup keeps this within +-cmd_yaw_err_clamp_rad, so the wrap is
+        # never reached; the clamp here makes that guarantee explicit and matches
+        # what the firmware computes.
+        clamp = self.cfg.cmd_yaw_err_clamp_rad
+        return wrap_angle_rad(yaw - self.yaw_ref).clamp(-clamp, clamp)
 
 
 class DriveObservationBuilder:
@@ -494,6 +572,12 @@ class DriveReward:
     quadratic penalties keep pitch, position drift, and actuation smooth.
     Pitch is deliberately weighted lower than in the balance task because the
     equilibrium pitch is nonzero on inclines and while accelerating.
+
+    An exp kernel is flat at zero error, so on its own it exerts almost no pull
+    over the last few cm/s — which is exactly the regime that decides whether
+    the robot holds station or creeps away. The kernels are therefore paired
+    with quadratic ``vel_err``/``yaw_rate_err`` terms (maximum gradient at zero)
+    plus ``hold_*`` terms that switch on only while the joystick is centred.
     """
 
     def __init__(self, cfg):
@@ -501,7 +585,7 @@ class DriveReward:
 
     def compute(
         self,
-        pos_err: torch.Tensor,
+        pos_err_raw: torch.Tensor,
         velocity: torch.Tensor,
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
@@ -517,19 +601,49 @@ class DriveReward:
         cg_delta_tanh: torch.Tensor,
         terminal_penalty: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        vel_err = velocity - velocity_cmd
-        yaw_rate_err = yaw_rate - yaw_rate_cmd
+        # The policy only ever sees pos_err clamped to +-cmd_pos_err_clamp_m; the
+        # reward keeps a bounded linear term on the excess so drift past the
+        # clamp is still punished and still pulls home.
+        clamp = self.cfg.cmd_pos_err_clamp_m
+        pos_err = pos_err_raw.clamp(-clamp, clamp)
+        pos_far = (pos_err_raw.abs() - clamp).clamp(0.0, self.cfg.pos_err_far_max_m)
+
+        vel_err = (velocity - velocity_cmd).clamp(-1.0, 1.0)
+        yaw_rate_err = (yaw_rate - yaw_rate_cmd).clamp(-3.0, 3.0)
+        # Every penalty below is bounded on purpose. An unbounded per-step
+        # penalty can exceed what falling costs (-fall_penalty once, plus the
+        # forgone alive/tracking reward), at which point diving for the floor is
+        # the optimal policy. The wrapped yaw error was the live example: at
+        # +-pi it cost 0.5*pi^2 = 4.9/step, roughly double the 2.3/step the robot
+        # gives up by falling, and turn-in-place benchmarks fell 98% of the time.
+        yaw_err_pen = yaw_err.clamp(-self.cfg.yaw_error_pen_clamp_rad, self.cfg.yaw_error_pen_clamp_rad)
+        rate_clamp = self.cfg.attitude_rate_pen_clamp_radps
+        pitch_rate_pen = pitch_rate.clamp(-rate_clamp, rate_clamp)
+        roll_rate_pen = roll_rate.clamp(-rate_clamp, rate_clamp)
+        hold_velocity = velocity.clamp(-0.5, 0.5)
+        # "Joystick centred" gate: the station-keeping requirement is only
+        # meaningful when no motion was asked for.
+        hold = (
+            (velocity_cmd.abs() < self.cfg.hold_velocity_cmd_threshold_mps)
+            & (yaw_rate_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps)
+        ).float()
+
         components = {
             "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
             "vel_track": self.cfg.rew_vel_track * torch.exp(-vel_err.pow(2) / self.cfg.vel_track_sigma**2),
             "yaw_rate_track": self.cfg.rew_yaw_rate_track
             * torch.exp(-yaw_rate_err.pow(2) / self.cfg.yaw_rate_track_sigma**2),
+            "vel_err": -self.cfg.rew_vel_err * vel_err.pow(2),
+            "yaw_rate_err": -self.cfg.rew_yaw_rate_err * yaw_rate_err.pow(2),
             "position": -self.cfg.rew_position * pos_err.pow(2),
-            "yaw_error": -self.cfg.rew_yaw_error * yaw_err.pow(2),
+            "position_far": -self.cfg.rew_position_far * pos_far,
+            "hold_velocity": -self.cfg.rew_hold_velocity * hold * hold_velocity.pow(2),
+            "hold_position": -self.cfg.rew_hold_position * hold * pos_err.pow(2),
+            "yaw_error": -self.cfg.rew_yaw_error * yaw_err_pen.pow(2),
             "pitch": -self.cfg.rew_pitch * pitch.pow(2),
-            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate.pow(2),
+            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate_pen.pow(2),
             "roll": -self.cfg.rew_roll * roll.pow(2),
-            "roll_rate": -self.cfg.rew_roll_rate * roll_rate.pow(2),
+            "roll_rate": -self.cfg.rew_roll_rate * roll_rate_pen.pow(2),
             "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
             "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
             "cg_pos": -self.cfg.rew_cg_pos * cg_tanh.pow(2).sum(dim=1),

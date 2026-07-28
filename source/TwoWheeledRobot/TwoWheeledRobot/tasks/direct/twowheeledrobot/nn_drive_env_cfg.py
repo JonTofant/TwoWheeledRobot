@@ -119,14 +119,23 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # Per-stage max |velocity| (m/s) and |yaw rate| (rad/s), indexed by
     # curriculum_stage 1..5. DDSM115 rated speed ≈ 0.61 m/s at the wheel.
     cmd_stage_velocity_max_mps: tuple = (0.0, 0.20, 0.35, 0.45, 0.55)
-    cmd_stage_yaw_rate_max_radps: tuple = (0.0, 0.6, 1.2, 1.6, 2.0)
+    # Measured yaw-rate ceiling is ~0.75 rad/s (scripts/diagnose_turn_failure.py):
+    # commanding 0.8/1.0/1.2/1.6/2.0 achieves 0.74/0.75/0.69/0.58/0.47, and it is
+    # not motor-limited (0.86 A of a 2.0 A budget, torque derate clipping <1% of
+    # steps). The old stage-5 max of 2.0 was 2.7x what the robot can do, so most
+    # late-stage yaw commands were unachievable by construction and guaranteed
+    # reference windup. Raise these again once a policy demonstrably turns faster.
+    cmd_stage_yaw_rate_max_radps: tuple = (0.0, 0.4, 0.6, 0.8, 1.0)
     cmd_resample_s_range: tuple = (2.5, 5.0)
-    cmd_still_episode_prob: float = 0.25   # whole episode zero-command (station keeping, incl. on slopes)
+    cmd_still_episode_prob: float = 0.35   # whole episode zero-command (station keeping, incl. on slopes)
     cmd_zero_axis_prob: float = 0.30       # per resample, chance each axis is zeroed
     cmd_velocity_slew_mps2: float = 1.0
     cmd_yaw_slew_radps2: float = 4.0
     cmd_settle_s: float = 1.0              # zero commands right after reset
-    cmd_pos_err_clamp_m: float = 0.5       # anti-windup for odometry drift, must match firmware
+    # Reference anti-windup limits — the reference is back-calculated so it can
+    # never run further than these ahead of the robot. Both must match firmware.
+    cmd_pos_err_clamp_m: float = 0.5       # anti-windup for odometry drift
+    cmd_yaw_err_clamp_rad: float = 1.0     # keeps yaw_err far from the +-pi wrap
     # Benchmark hooks: forced_command_mode="fixed" pins commands for evaluation.
     forced_command_mode: str = ""
     forced_velocity_cmd_mps: float = 0.0
@@ -141,21 +150,54 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     noise_cg_pos_std: float = 0.005            # rad, CyberGear encoder noise (obs)
 
     # ── Reward ───────────────────────────────────────────────────────────────
+    # Every weight below can be zeroed from the CLI (e.g. env.rew_hold_velocity=0.0)
+    # to bisect which term is responsible for a behaviour change.
     rew_alive: float = 1.0
     rew_vel_track: float = 0.8
     vel_track_sigma: float = 0.25              # m/s
     rew_yaw_rate_track: float = 0.5
     yaw_rate_track_sigma: float = 0.6          # rad/s
-    rew_position: float = 1.5                  # on clamped pos_err (max 0.375 at the 0.5 m clamp)
+    # Quadratic partners for the exp kernels above: the kernels are flat at zero
+    # error, these are steepest there, which is what closes out the last few cm/s.
+    rew_vel_err: float = 1.0                   # on vel_err clamped to +-1 m/s
+    rew_yaw_rate_err: float = 0.15             # on yaw_rate_err clamped to +-3 rad/s
+    rew_position: float = 3.0                  # on clamped pos_err (max 0.75 at the 0.5 m clamp)
+    # Linear penalty on drift beyond the observation clamp, bounded so that
+    # drifting can never become more expensive than falling (max 0.6/step).
+    rew_position_far: float = 0.4
+    pos_err_far_max_m: float = 1.5
+    # Station keeping: only active while the joystick is centred, so it cannot
+    # fight command tracking. 20 cm of creep costs 0.16/step, 0.2 m/s costs 0.16/step.
+    rew_hold_velocity: float = 4.0
+    rew_hold_position: float = 4.0
+    hold_velocity_cmd_threshold_mps: float = 0.03
+    hold_yaw_rate_cmd_threshold_radps: float = 0.05
     rew_yaw_error: float = 0.5
-    rew_pitch: float = 4.0                     # lower than balance task: slopes need lean
-    rew_pitch_rate: float = 0.3
-    rew_roll: float = 8.0                      # no legitimate reason to lean sideways, unlike pitch
-    rew_roll_rate: float = 0.3
+    # Heading error is wrapped to +-pi, so an unclamped quadratic peaked at
+    # 0.5*pi^2 = 4.9/step — more than the ~2.3/step the robot gives up by
+    # falling, which made diving for the floor the optimal response to a large
+    # heading error. Clamping caps this term at 0.5/step.
+    yaw_error_pen_clamp_rad: float = 1.0
+    # Torso attitude: the 5-bar legs can pitch/roll the platform against the
+    # chassis lean, so a level platform is achievable even while leaning to
+    # balance or climb. Weighted up from 4.0/8.0 (which settled at ~6 deg each)
+    # because the platform is a carrying surface.
+    rew_pitch: float = 6.0
+    rew_pitch_rate: float = 0.5
+    rew_roll: float = 12.0                     # no legitimate reason to lean sideways, unlike pitch
+    rew_roll_rate: float = 0.5
+    # Same bounding argument as yaw_error: rates spike during a fall, and an
+    # unbounded rate penalty would pay the policy to stop trying to recover.
+    # 2 rad/s (115 deg/s) is already far faster than a carrying surface should
+    # move, so clipping the gradient above it costs nothing and caps each rate
+    # term at 2.0/step — below the ~2.3/step the robot forfeits by falling.
+    attitude_rate_pen_clamp_radps: float = 2.0
     rew_current: float = 0.01
     rew_delta_current: float = 0.05            # actuation smoothness — matters on hardware
-    rew_cg_pos: float = 0.05
-    rew_cg_rate: float = 0.5
+    # Centring the legs is now cheap: hip fore/aft is the actuator that levels
+    # the platform and shifts the contact point under the COM without driving.
+    rew_cg_pos: float = 0.02
+    rew_cg_rate: float = 0.8                   # but discourage flapping
 
     # ── Reset state ──────────────────────────────────────────────────────────
     reset_pitch_range_deg: float = 12.0
@@ -165,10 +207,17 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
 
     # ── Extra domain randomization (all per-episode unless noted) ────────────
     body_mass_scale_range: tuple = (0.85, 1.15)         # all bodies, inertia scaled alike
-    com_offset_x_range_m: tuple = (-0.015, 0.015)       # platform COM shift (payload model)
+    # Persistent trim errors are the direct cause of "drives away": a constant
+    # offset between the measured zero-pitch and the true balance point makes a
+    # pitch-servoing policy accelerate forever. The only cure is for the policy
+    # to learn to re-trim from pos_err/velocity, which it only learns if the
+    # offsets in training are big enough to matter. Widened from +-1.5 cm /
+    # +-1.2 deg, which real COM tolerance and BNO080 mounting easily exceed.
+    com_offset_x_range_m: tuple = (-0.030, 0.030)       # platform COM shift (payload model)
     com_offset_z_range_m: tuple = (-0.010, 0.015)
     odometry_scale_range: tuple = (0.97, 1.03)          # wheel-radius error seen by obs only
-    pitch_bias_rad_range: tuple = (math.radians(-1.2), math.radians(1.2))  # IMU mounting error
+    pitch_bias_rad_range: tuple = (math.radians(-3.0), math.radians(3.0))  # IMU mounting error
+    payload_pitch_torque_nm_range: tuple = (-0.4, 0.4)  # persistent COM-shift torque
     pitch_rate_bias_radps_range: tuple = (-0.03, 0.03)  # gyro bias
     yaw_rate_bias_radps_range: tuple = (-0.03, 0.03)
     yaw_rate_noise_std: float = 0.02

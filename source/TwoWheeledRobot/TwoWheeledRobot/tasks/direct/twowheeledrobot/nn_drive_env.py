@@ -168,7 +168,14 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._prev_actions = self._cur_actions.clone()
         self._cur_actions = actions.clone()
 
-        self._commands.step(self.episode_length_buf, self.cfg.curriculum_stage, self.step_dt)
+        # Feed measured odometry/heading in so the references cannot outrun the
+        # robot (anti-windup); the firmware does the same with its own odometry.
+        raw_wheel_pos = self.robot.data.joint_pos[:, self._wheel_ids] * self._wheel_sign
+        x_odom_now = 0.5 * raw_wheel_pos.sum(dim=1) * R_WHEEL
+        yaw_now = yaw_from_quat_wxyz(self.robot.data.root_quat_w)
+        self._commands.step(
+            self.episode_length_buf, self.cfg.curriculum_stage, self.step_dt, x_odom_now, yaw_now
+        )
 
         cg_targets = self._cg_processor.process(
             actions[:, 0:4], self._cg_joint_lo, self._cg_joint_hi, self.step_dt
@@ -257,9 +264,12 @@ class NNDriveEnv(PureNNBalanceEnv):
         roll = roll_from_projected_gravity(self.bno080.data.projected_gravity_b)
         roll_rate = self.bno080.data.ang_vel_b[:, 1]
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
-        pos_err = self._commands.position_error(x_rel)
+        # Reward sees the unclamped drift (DriveReward clamps internally for the
+        # quadratic term); the observation stays clamped for firmware parity.
+        pos_err_raw = self._commands.position_error_raw(x_rel)
+        pos_err = pos_err_raw.clamp(-self.cfg.cmd_pos_err_clamp_m, self.cfg.cmd_pos_err_clamp_m)
         reward, components = self._drive_reward.compute(
-            pos_err,
+            pos_err_raw,
             velocity,
             pitch,
             pitch_rate,
@@ -275,6 +285,9 @@ class NNDriveEnv(PureNNBalanceEnv):
             self._cg_processor.delta_tanh(),
             self._last_terminal_penalty,
         )
+        hold_mask = (self._commands.v_cmd.abs() < self.cfg.hold_velocity_cmd_threshold_mps) & (
+            self._commands.w_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps
+        )
         self._episode_reward += reward
         self.extras["log"] = {
             "reward": reward.mean(),
@@ -286,6 +299,11 @@ class NNDriveEnv(PureNNBalanceEnv):
             "vel_err_abs": (velocity - self._commands.v_cmd).abs().mean(),
             "yaw_rate_err_abs": (yaw_rate - self._commands.w_cmd).abs().mean(),
             "pos_err_abs": pos_err.abs().mean(),
+            # Unclamped drift and the stationary-only subset: these two are the
+            # numbers that track the hardware "drives away" complaint.
+            "pos_err_raw_abs": pos_err_raw.abs().mean(),
+            "hold_pos_err_abs": self._masked_mean(pos_err_raw.abs(), hold_mask),
+            "hold_velocity_abs": self._masked_mean(velocity.abs(), hold_mask),
             "yaw_error_abs": yaw_error.abs().mean(),
             "v_cmd_abs": self._commands.v_cmd.abs().mean(),
             "w_cmd_abs": self._commands.w_cmd.abs().mean(),
@@ -300,6 +318,14 @@ class NNDriveEnv(PureNNBalanceEnv):
             "disturbance_torque_nm": self._last_disturbance_torque.norm(dim=1).mean(),
         }
         return reward
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Mean of ``values`` over ``mask``; zero when no env matches this step."""
+        count = mask.sum()
+        if count == 0:
+            return torch.zeros((), device=values.device)
+        return (values * mask.float()).sum() / count
 
     # ── Reset ────────────────────────────────────────────────────────────────
 

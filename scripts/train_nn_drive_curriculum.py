@@ -40,8 +40,25 @@ def latest_checkpoint(run_dir: Path) -> Path | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train NN drive policy through stages 1..5.")
     parser.add_argument("--num_envs", type=int, default=4096)
-    parser.add_argument("--iterations", type=int, nargs=5, default=[300, 400, 500, 600, 800])
+    # Sized from where each stage actually stops improving (measured on the
+    # 2026-07-27 run): stage 1 plateaus at ~60% of its budget, stage 2 ~79%,
+    # stage 4 ~32%, and stage 5 is converged by ~100 iterations — its last 700
+    # iterations moved fall rate/pitch/roll/pos_err by under 3%. The old
+    # [300,400,500,600,800] cost 280 min; this costs ~137 min.
+    parser.add_argument("--iterations", type=int, nargs=5, default=[200, 350, 200, 250, 300])
     parser.add_argument("--start-stage", type=int, default=1, choices=[1, 2, 3, 4, 5])
+    parser.add_argument(
+        "--load-run",
+        type=str,
+        default=None,
+        help=(
+            "Run directory to resume the FIRST executed stage from. Without it the "
+            "resume point is whichever run has the newest mtime, so repeated "
+            "single-stage experiments silently chain off each other instead of off a "
+            "fixed baseline. Pin this for A/B comparisons, e.g. "
+            "--start-stage 5 --load-run 2026-07-27_15-14-04_stage4"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--i-max-a", type=float, default=2.0)
     parser.add_argument("--cg-authority-rad", type=float, default=0.45)
@@ -53,7 +70,11 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     train_py = repo / "scripts" / "rsl_rl" / "train.py"
     log_root = repo / "logs" / "rsl_rl" / "nn_drive_two_wheel"
-    load_run = latest_run(log_root)
+    # An explicit --load-run pins the baseline; otherwise fall back to newest-mtime.
+    # Subsequent stages still chain off the run this invocation just produced.
+    load_run = args.load_run or latest_run(log_root)
+    if args.load_run is not None and not (log_root / args.load_run).is_dir():
+        parser.error(f"--load-run directory does not exist: {log_root / args.load_run}")
 
     for stage, iterations in enumerate(args.iterations, start=1):
         if stage < args.start_stage:
