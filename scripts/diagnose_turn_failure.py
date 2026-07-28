@@ -37,7 +37,15 @@ parser.add_argument(
     default=[0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.6, 2.0],
     help="commanded yaw rates (rad/s) to sweep",
 )
-parser.add_argument("--v-cmd", type=float, default=0.0, help="forward command held during the sweep")
+parser.add_argument("--v-cmd", type=float, default=0.0, help="forward command held during a yaw sweep")
+parser.add_argument(
+    "--velocities",
+    type=float,
+    nargs="+",
+    default=None,
+    help="sweep forward velocity (m/s) instead of yaw rate; --w-cmd is then held fixed",
+)
+parser.add_argument("--w-cmd", type=float, default=0.0, help="yaw command held during a velocity sweep")
 parser.add_argument(
     "--pin-yaw-ref",
     action="store_true",
@@ -98,6 +106,8 @@ def _sweep_point_impl(
     fell_by_pitch = torch.zeros(n, dtype=torch.bool, device=dev)
     fell_by_tilt = torch.zeros(n, dtype=torch.bool, device=dev)
     yaw_rate_sum = torch.zeros(n, device=dev)
+    speed_sum = torch.zeros(n, device=dev)
+    pitch_sum = torch.zeros(n, device=dev)
     roll_sq_sum = torch.zeros(n, device=dev)
     pitch_sq_sum = torch.zeros(n, device=dev)
     cur_sq_sum = torch.zeros(n, device=dev)
@@ -132,13 +142,18 @@ def _sweep_point_impl(
             # accumulated/wrapping heading error".
             u._commands.yaw_ref = yaw_from_quat_wxyz(u.robot.data.root_quat_w).clone()
 
-        _, _, pitch, _, _, yaw_rate = u._state_terms()
+        _, velocity, pitch, _, _, yaw_rate = u._state_terms()
         roll = roll_from_projected_gravity(u.bno080.data.projected_gravity_b)
         tilt = u._last_total_tilt
 
         if step >= settle_steps:
             tracked += 1
             yaw_rate_sum += torch.where(alive, yaw_rate, torch.zeros_like(yaw_rate))
+            # Signed, not abs: a balancing robot can only accelerate by leaning,
+            # so a near-zero mean pitch under a drive command means the policy is
+            # refusing to lean and therefore cannot build speed.
+            speed_sum += torch.where(alive, velocity, torch.zeros_like(velocity))
+            pitch_sum += torch.where(alive, pitch, torch.zeros_like(pitch))
             roll_sq_sum += torch.where(alive, roll.pow(2), torch.zeros_like(roll))
             pitch_sq_sum += torch.where(alive, pitch.pow(2), torch.zeros_like(pitch))
             cur_sq_sum += torch.where(
@@ -163,6 +178,8 @@ def _sweep_point_impl(
         "fall_rate": fell.float().mean().item(),
         "survival_s": survival.mean().item(),
         "achieved_yaw_radps": (yaw_rate_sum / d).mean().item(),
+        "achieved_speed_mps": (speed_sum / d).mean().item(),
+        "mean_pitch_deg": ((pitch_sum / d).mean() * 180.0 / math.pi).item(),
         "rms_roll_deg": (torch.sqrt(roll_sq_sum / d).mean() * 180.0 / math.pi).item(),
         "rms_pitch_deg": (torch.sqrt(pitch_sq_sum / d).mean() * 180.0 / math.pi).item(),
         "rms_current_a": torch.sqrt(cur_sq_sum / d).mean().item(),
@@ -190,6 +207,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
     cols = [
         "fall_rate",
         "survival_s",
+        "achieved_speed_mps",
+        "mean_pitch_deg",
         "achieved_yaw_radps",
         "rms_roll_deg",
         "rms_pitch_deg",
@@ -198,18 +217,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, _age
         "fell_by_pitch_frac",
         "fell_by_tilt_frac",
     ]
+    sweep_velocity = args_cli.velocities is not None
+    swept = args_cli.velocities if sweep_velocity else args_cli.yaw_rates
+    held = f"w_cmd={args_cli.w_cmd:+.2f} rad/s" if sweep_velocity else f"v_cmd={args_cli.v_cmd:+.2f} m/s"
+    label = "v_cmd" if sweep_velocity else "w_cmd"
     print(
-        f"\npolicy={args_cli.policy}  v_cmd={args_cli.v_cmd:+.2f} m/s  "
+        f"\npolicy={args_cli.policy}  sweeping {label}  held {held}  "
         f"terrain={args_cli.terrain}  pin_yaw_ref={args_cli.pin_yaw_ref}"
     )
-    print("w_cmd " + "".join(f"{c:>20s}" for c in cols))
-    for w_cmd in args_cli.yaw_rates:
+    print(f"{label:5s} " + "".join(f"{c:>20s}" for c in cols))
+    for value in swept:
         live_cfg = env.unwrapped.cfg
         live_cfg.curriculum_stage = 5
-        live_cfg.forced_velocity_cmd_mps = args_cli.v_cmd
-        live_cfg.forced_yaw_rate_cmd_radps = w_cmd
+        if sweep_velocity:
+            live_cfg.forced_velocity_cmd_mps = value
+            live_cfg.forced_yaw_rate_cmd_radps = args_cli.w_cmd
+        else:
+            live_cfg.forced_velocity_cmd_mps = args_cli.v_cmd
+            live_cfg.forced_yaw_rate_cmd_radps = value
         m = _sweep_point(policy, env, args_cli.num_steps, settle_steps, args_cli.pin_yaw_ref)
-        print(f"{w_cmd:5.2f} " + "".join(f"{m[c]:20.3f}" for c in cols))
+        print(f"{value:5.2f} " + "".join(f"{m[c]:20.3f}" for c in cols))
     env.close()
 
 

@@ -118,7 +118,17 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # ── Commands (joystick contract) ─────────────────────────────────────────
     # Per-stage max |velocity| (m/s) and |yaw rate| (rad/s), indexed by
     # curriculum_stage 1..5. DDSM115 rated speed ≈ 0.61 m/s at the wheel.
-    cmd_stage_velocity_max_mps: tuple = (0.0, 0.20, 0.35, 0.45, 0.55)
+    # Stage 1 must NOT be zero. With v_max=0.0 the policy spent its entire first
+    # stage learning that the correct answer is "never move", and once the
+    # exploration std settled (~0.08) no later stage could escape that attractor:
+    # a velocity sweep showed 0.004 m/s achieved against a 0.55 m/s command, with
+    # current at 0.24 A of a 2.0 A budget and zero torque-derate clipping — the
+    # robot was not failing to drive, it was not trying. Standing still under a
+    # 0.40 m/s command already forfeits ~1.65 reward/step, so this is an
+    # exploration failure, not a shaping one; the cure is to never create the
+    # standstill-only regime. cmd_still_episode_prob still gives station-keeping
+    # practice, mixed in rather than as a whole stage.
+    cmd_stage_velocity_max_mps: tuple = (0.15, 0.30, 0.40, 0.50, 0.55)
     # Measured yaw-rate ceiling is ~0.75 rad/s (scripts/diagnose_turn_failure.py):
     # commanding 0.8/1.0/1.2/1.6/2.0 achieves 0.74/0.75/0.69/0.58/0.47, and it is
     # not motor-limited (0.86 A of a 2.0 A budget, torque derate clipping <1% of
