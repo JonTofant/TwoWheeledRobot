@@ -85,6 +85,10 @@ class CurrentActionProcessor:
         limit_lo, limit_hi = self.cfg.motor_current_limit_a_range
         self.left_gain[env_ids] = torch.empty(n, device=self.device).uniform_(gain_lo, gain_hi)
         self.right_gain[env_ids] = torch.empty(n, device=self.device).uniform_(gain_lo, gain_hi)
+        # One deadzone draw per wheel (columns are left/right, not POS/NEG), applied
+        # symmetrically to both directions in process(). Measured POS/NEG deadzone
+        # correlates at r = +0.989 across units (EMB-18), so per-direction sampling
+        # would train over motors that do not exist. Do not split this into 4 draws.
         self.deadzone[env_ids] = torch.empty(n, 2, device=self.device).uniform_(dz_lo, dz_hi)
         self.bias[env_ids] = torch.empty(n, 2, device=self.device).uniform_(bias_lo, bias_hi)
         self.tau_s[env_ids] = torch.empty(n, 2, device=self.device).uniform_(tau_lo, tau_hi)

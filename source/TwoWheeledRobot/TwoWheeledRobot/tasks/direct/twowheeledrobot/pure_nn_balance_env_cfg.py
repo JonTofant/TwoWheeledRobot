@@ -79,7 +79,14 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
 
     # Active sim2real randomization. Wheel friction and motor response parameters
     # are randomized around physically plausible/identified nominal values.
-    wheel_frictionloss_range: tuple = (0.007, 0.013)  # Coulomb-like joint frictionloss, nominal 0.010.
+    # NOT a Nm frictionloss despite the name — this goes to Isaac Lab's
+    # write_joint_friction_coefficient_to_sim, whose argument is a dimensionless
+    # coefficient bounding the resisting torque at mu_s * |F_spatial|, i.e. it
+    # scales with the transmitted constraint force. It therefore cannot be
+    # compared directly to EMB-17's 23-58 mNm measured wheel friction, and it may
+    # be modelling the same physics the current deadzone already models. Open
+    # question, see the "wheel friction modelled twice" task. Nominal 0.010.
+    wheel_frictionloss_range: tuple = (0.007, 0.013)
     wheel_viscous_damping_randomization_active: bool = True
     wheel_viscous_damping_range: tuple = (0.006, 0.014)  # Nm*s/rad, DDSM115 internal damping estimate.
     ground_friction_randomization_mode: str = "per_run"  # Shared ground plane; sampled once at env startup.
@@ -96,14 +103,61 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     randomization_debug_log_resets: int = 3
     randomization_debug_env_count: int = 4
 
-    motor_gain_range: tuple = (0.8, 1.2)
-    motor_deadzone_a_range: tuple = (0.03, 0.20)
-    motor_bias_a_range: tuple = (-0.08, 0.08)
+    # Motor gain (current-to-torque scale). ASSUMED, not identified: K_t cannot be
+    # reached on a free-running rig, so there is no measured torque-constant
+    # spread. The nearest bound is the no-load speed plateau, whose session-immune
+    # unit-to-unit spread is 1.21 % of mean (EMB-18, n = 12) — and that already
+    # includes friction variation, so it is an upper bound on the K_t spread.
+    # +-3 % is that bound with safety margin. The previous +-20 % randomized over
+    # motors the measured population does not contain, which would have made the
+    # EXP-A (point estimate) vs EXP-B (range) comparison meaningless.
+    motor_gain_range: tuple = (0.97, 1.03)
+    # Deadzone. IDENTIFIED from EMB-18 (n = 12 units, 5 repeats, 25 V bench supply,
+    # free-running): stopping-deadzone mean 53.4 mA, observed 36.0-78.0 mA,
+    # between-unit SD 7.6 mA (session-immune) to 11.1 mA (naive), against a 0.8 mA
+    # rig noise floor. Sampled independently per wheel, and CurrentActionProcessor
+    # applies each draw symmetrically to both directions — POS and NEG deadzone
+    # correlate at r = +0.989 across units, so the asymmetry is a per-unit constant
+    # and sampling the two directions independently would generate motors that do
+    # not exist. Note this is the *stopping* (kinetic) deadzone; breakaway (static,
+    # from rest) is 2-3x larger and is not reliably measurable on that rig.
+    # Provisional: n = 12 of a ~30-unit target — re-derive from EMB-18 before any
+    # EXP-B result is written up.
+    motor_deadzone_a_range: tuple = (0.031, 0.078)
+    # Constant per-wheel current offset, added before the deadzone is applied, so
+    # it is what would make a zero command produce torque. IDENTIFIED AS ZERO
+    # (EMB-17, 2026-08-04), measured directly in the stalled region (|command| <=
+    # 30 mA, below every unit's deadzone, so there is no back-EMF and the current
+    # loop delivers exactly what it is asked for): bias at commanded zero is
+    # -0.002 mA with a between-unit SD of 0.030 counts = 0.0074 mA at the measured
+    # 4096 counts/A, and speed is exactly 0.00 rpm on every unit and every repeat.
+    # That is ~0.0015 mNm of offset torque.
+    #
+    # Left at zero rather than given a token range: the usual "do not randomize
+    # too narrowly" argument applies to parameters whose spread is unmeasured,
+    # and this spread *is* measured, at ~7 uA. Randomizing it models nothing.
+    # Previous values were +-0.08 A (~10000x the measured SD) and briefly
+    # +-0.005 A, set before the direct measurement existed.
+    #
+    # Note this is an electromagnetic statement. A PM motor still has cogging
+    # torque at zero current, but it is position-dependent and averages to zero
+    # over a revolution, so it is not a bias term — it is why *static* breakaway
+    # is 2-3x the kinetic deadzone modelled here and is not reliably measurable.
+    motor_bias_a_range: tuple = (0.0, 0.0)
     # Electrical/current-loop response lag, not the robot mechanical time
-    # constant. Sampled once per episode and held fixed. A wider robustness
-    # setting up to 0.030 s can be used by overriding this range from Hydra.
-    motor_tau_s_range: tuple = (0.005, 0.020)
-    motor_current_limit_a_range: tuple = (1.6, 2.4)
+    # constant. Sampled once per episode and held fixed. ASSUMED — the
+    # free-running rig cannot reach it (a load is required, EMB-18 open item).
+    # Narrowed from (0.005, 0.020): the old upper end exceeded the 15 ms control
+    # period, so one policy was trained across plants ranging from "responds
+    # within the step" to "a full step behind", which is a large unsupported
+    # variance. A wider robustness setting can still be applied from Hydra.
+    motor_tau_s_range: tuple = (0.005, 0.010)
+    # ASSUMED. Saturation is a driver/firmware property rather than a
+    # manufacturing one, so it should be near-identical across units. Narrowed
+    # from (1.6, 2.4): the old lower end sat below i_max_a = 2.0, so those
+    # episodes clipped the policy's own maximum command and taught it that its
+    # top-end authority is unreliable.
+    motor_current_limit_a_range: tuple = (1.9, 2.1)
 
     pitch_bias_rad_range: tuple = (math.radians(-0.5), math.radians(0.5))
     pitch_noise_std: float = math.radians(0.15)

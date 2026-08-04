@@ -155,8 +155,14 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     cg_action_authority_rad: float = 0.45      # ~26 deg of stance authority around zero
     cg_target_slew_radps: float = 3.0          # firmware-side target slew limit
     cg_calib_bias_rad_range: tuple = (math.radians(-1.0), math.radians(1.0))
-    cg_kp_range: tuple = (21.0, 39.0)          # Nm/rad, +-30% around sim nominal 30
-    cg_kd_range: tuple = (2.1, 3.9)            # Nm*s/rad, +-30% around sim nominal 3
+    # CyberGear kp/kd are *commanded* over the bus in MIT mode (they match the
+    # kp/kd in cybergear.c, sim nominal CYBERGEAR_STIFFNESS/CYBERGEAR_DAMPING =
+    # 30 / 3), so unlike the DDSM115 current gain these are set values, not
+    # manufacturing draws. Only the tracking of the commanded gain varies between
+    # units, so randomize tightly around nominal (+-5%) rather than the previous
+    # +-30%, which trained over leg stiffnesses that are never actually commanded.
+    cg_kp_range: tuple = (28.5, 31.5)          # Nm/rad, +-5% around sim nominal 30
+    cg_kd_range: tuple = (2.85, 3.15)          # Nm*s/rad, +-5% around sim nominal 3
     noise_cg_pos_std: float = 0.005            # rad, CyberGear encoder noise (obs)
 
     # ── Reward ───────────────────────────────────────────────────────────────

@@ -16,6 +16,14 @@ class NNDrivePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 2000
     save_interval = 100
     experiment_name = "nn_drive_two_wheel"
+    # Actions 4/5 drive the wheels. Below 0.15 raw std their exploration is
+    # largely swallowed by the randomized motor deadzone.
+    # NOTE: 0.15 was chosen against the old 0.03-0.20 A deadzone. That range is
+    # now 0.031-0.078 A (measured, EMB-18), i.e. ~2.5x smaller, so less
+    # exploration is swallowed and this floor is now conservative rather than
+    # tight. Kept as-is because it is a floor and it fixed the exploration
+    # collapse; revisit only if mean_noise_std pins to it for a whole stage.
+    action_std_floor: list[float] = [0.0, 0.0, 0.0, 0.0, 0.15, 0.15]
 
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
         init_noise_std=0.3,
@@ -31,20 +39,6 @@ class NNDrivePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        # 0.004 made the exploration std run away: across the 2026-07-09 five-stage
-        # curriculum Policy/mean_noise_std grew 0.17 -> 2.04 (tanh-saturating,
-        # effectively bang-bang exploration), and pos_err/pitch/roll flatlined at
-        # 0.23 m / 6 deg / 6 deg from stage 2 on. With ~1.3 reward/step the entropy
-        # bonus outweighed the shaping gradient on log_std. Keep this low enough
-        # that precision pays; watch Policy/mean_noise_std stays under ~0.4.
-        # Middle ground. 0.004 ran away (std 0.17 -> 2.04, bang-bang exploration);
-        # 0.0005 cured that but collapsed the policy into a stand-still optimum
-        # it could not escape — velocity tracking fell from 0.128 m/s achieved
-        # (old, noisy) to 0.004 m/s. The runaway originally happened because the
-        # reward landscape was flat; the bounded penalties and quadratic tracking
-        # terms added since give real gradient on log_std, so a middle value
-        # should hold. WATCH Policy/mean_noise_std: if it climbs past ~0.4, drop
-        # this to 0.001.
         entropy_coef=0.002,
         num_learning_epochs=4,
         num_mini_batches=4,
