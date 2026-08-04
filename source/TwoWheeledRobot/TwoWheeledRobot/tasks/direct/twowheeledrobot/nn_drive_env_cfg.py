@@ -71,7 +71,7 @@ DRIVE_TERRAINS_CFG = TerrainGeneratorCfg(
 
 @configclass
 class NNDriveEnvCfg(PureNNBalanceEnvCfg):
-    observation_space: int = 18
+    observation_space: int = 20
     action_space: int = 6
     state_space: int = 0
 
@@ -100,7 +100,7 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     spawn_extra_clearance_m: float = 0.01  # extra drop height on bumpy tiles
 
     # ── Policy interface ─────────────────────────────────────────────────────
-    # Divisors for the 18 observation values; see DriveObservationBuilder.
+    # Divisors for the 20 observation values; see DriveObservationBuilder.
     drive_observation_scale: tuple = (
         0.5,                 # pos_err (m), clamped to +-cmd_pos_err_clamp_m
         1.0,                 # velocity (m/s)
@@ -113,6 +113,8 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
         1.0, 1.0, 1.0, 1.0,  # cg extension fraction (already [-1, 1])
         2.0, 2.0,            # previous wheel current (A)
         1.0, 1.0, 1.0, 1.0,  # previous cg tanh action (already [-1, 1])
+        math.radians(25.0),  # roll (rad) — same scale as pitch
+        4.0,                 # roll_rate (rad/s) — same scale as pitch_rate
     )
 
     # ── Commands (joystick contract) ─────────────────────────────────────────
@@ -237,6 +239,16 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     pitch_rate_bias_radps_range: tuple = (-0.03, 0.03)  # gyro bias
     yaw_rate_bias_radps_range: tuple = (-0.03, 0.03)
     yaw_rate_noise_std: float = 0.02
+    # Roll axis of the same BNO080 mount, added with the roll observation
+    # 2026-08-04. Same magnitudes as the pitch equivalents but sampled
+    # separately — two axes of one mount are independent errors, not a shared
+    # one. Roll uses pitch_noise_std / pitch_rate_noise_std for its white noise.
+    # NOTE: pitch_bias_rad_range is deliberately +-3 deg, wider than a real
+    # mounting error, to force the policy to re-trim from pos_err (see its
+    # comment). That argument is fore/aft-specific: there is no "drives away"
+    # failure on the roll axis, so roll bias is set to a realistic +-1 deg.
+    roll_bias_rad_range: tuple = (math.radians(-1.0), math.radians(1.0))
+    roll_rate_bias_radps_range: tuple = (-0.03, 0.03)
 
     # Continuous low-amplitude force noise (floor texture / debris proxy),
     # first-order-filtered white noise on the platform, in addition to the

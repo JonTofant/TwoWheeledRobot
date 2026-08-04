@@ -148,7 +148,7 @@ Template-Twowheeledrobot-NNDrive-v0
 
 Policy rate is 66.7 Hz (`dt = 0.015 s`), same as the balance controller. The
 actor is `[64, 64]` (~5.8k float32 parameters, ~23 KB — trivially fits the
-STM32F446RE). The deployed model takes 18 normalized `float32` observations and
+STM32F446RE). The deployed model takes 20 normalized `float32` observations and
 returns 6 commands.
 
 ### Observation layout (divide raw value by the listed scale)
@@ -165,7 +165,22 @@ returns 6 commands.
  8-11  cg_pos / 0.45 rad     CyberGear joint angles [fl, fr, bl, br]
 12-13  prev_current / 2.0 A  previous wheel current commands [left, right]
 14-17  prev_cg_action        previous tanh CyberGear actions, already [-1, 1]
+18  roll / 25 deg            rad, from the same IMU as pitch
+19  roll_rate / 4.0 rad/s    rad/s, gyro axis matching roll
 ```
+
+**Roll/roll_rate were added 2026-08-04 (18 -> 20 values).** They are appended
+rather than placed next to pitch so that indices 0-17 keep their meaning: the
+firmware change is two extra values at the end, not a renumbering. Any policy
+exported before that date takes 18 inputs and is not loadable against this
+layout — check the ONNX input shape rather than assuming.
+
+Sign convention: roll is rotation about the fore/aft axis (leaning sideways),
+positive in the same sense as the sim's `roll_from_projected_gravity`, i.e.
+`atan2(g_x, -g_z)` on body-frame projected gravity. `roll_rate` is the gyro
+component about that same axis. Getting this sign wrong is worse than omitting
+the values, because the policy actively servos roll with the legs — verify it
+against `scripts/test_policy_angle_sweep.py` before driving the robot.
 
 ### Joystick contract (must run on the STM32 every 15 ms tick)
 
@@ -208,7 +223,7 @@ Manual export from an existing `policy.pt`:
 python scripts/export_pure_nn_current_onnx.py \
   --policy logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy.pt \
   --output logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy_drive.onnx \
-  --obs-dim 18 --cg-outputs 4 --cg-authority-rad 0.45 --i-max-a 2.0
+  --obs-dim 20 --cg-outputs 4 --cg-authority-rad 0.45 --i-max-a 2.0
 ```
 
 Benchmark station keeping, command tracking, and disturbances (add

@@ -479,7 +479,7 @@ class CommandGenerator:
 
 
 class DriveObservationBuilder:
-    """Build the 18-value drive observation with fixed normalization.
+    """Build the 20-value drive observation with fixed normalization.
 
     Layout (all values BEFORE dividing by ``drive_observation_scale``):
         [0]  pos_err          m,  clamp +-cmd_pos_err_clamp_m
@@ -493,6 +493,22 @@ class DriveObservationBuilder:
         [8-11]  cg_pos_norm   CyberGear extension fraction in [-1, 1] (fl, fr, bl, br)
         [12-13] prev wheel current A (left, right)
         [14-17] prev cg action, tanh-squashed in [-1, 1] (fl, fr, bl, br)
+        [18] roll             rad
+        [19] roll_rate        rad/s
+
+    Roll and roll_rate are APPENDED rather than grouped next to pitch on
+    purpose: indices 0-17 keep their meaning, so the STM32 firmware change is
+    two added values at the end instead of renumbering fourteen entries.
+
+    They were added 2026-08-04. Before that the reward penalized roll at
+    rew_roll = 12.0 -- the heaviest weight in the config -- while roll was
+    absent from this vector, so the policy was taxed on a quantity it could not
+    sense while holding four leg actuators that directly control it. Measured
+    consequence: roll left the reset value of 0.000 deg and settled to a
+    systematic lean within 1.5 s, identical in sign and magnitude across all
+    envs and unaffected by command, disturbance or terrain (-5.3 deg for the
+    2026-07-29 policy, -11.0 deg for 2026-08-04). With zero actions the
+    platform sits level, confirming the lean was policy-commanded.
     """
 
     def __init__(self, cfg, device: torch.device):
@@ -514,11 +530,14 @@ class DriveObservationBuilder:
         cg_pos_norm: torch.Tensor,
         previous_current: torch.Tensor,
         previous_cg_action: torch.Tensor,
+        roll: torch.Tensor,
+        roll_rate: torch.Tensor,
     ) -> torch.Tensor:
         scalars = torch.stack(
             [pos_err, velocity, pitch, pitch_rate, yaw_err, yaw_rate, velocity_cmd, yaw_rate_cmd], dim=1
         )
-        obs = torch.cat([scalars, cg_pos_norm, previous_current, previous_cg_action], dim=1)
+        attitude = torch.stack([roll, roll_rate], dim=1)
+        obs = torch.cat([scalars, cg_pos_norm, previous_current, previous_cg_action, attitude], dim=1)
         return torch.nan_to_num(obs / self.scale, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
 
 

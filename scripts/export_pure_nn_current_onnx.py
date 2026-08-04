@@ -106,7 +106,7 @@ def main() -> None:
         help="Raw actor ONNX exported by play.py. Defaults to policy.onnx next to --policy.",
     )
     parser.add_argument("--output", required=True, type=Path, help="Output ONNX path")
-    parser.add_argument("--obs-dim", type=int, default=8, help="8 for PureNNBalance, 18 for NNDrive")
+    parser.add_argument("--obs-dim", type=int, default=8, help="8 for PureNNBalance, 20 for NNDrive")
     parser.add_argument("--i-max-a", type=float, default=2.0)
     parser.add_argument(
         "--cg-outputs",

@@ -40,7 +40,7 @@ scripts reference them by string.
   position/heading references, clamped against odometry drift), 6 actions (4 CyberGear stance targets
   + 2 wheel currents), generated terrain (flat/bumps/inclines), and wider domain randomization
   (mass/inertia scale, platform COM shift, odometry scale, gyro biases, CyberGear gains, force noise).
-  Obs (18) / action (6) contract is documented in `STM32_DEPLOYMENT.md` and must stay aligned with the
+  Obs (20) / action (6) contract is documented in `STM32_DEPLOYMENT.md` and must stay aligned with the
   STM32 joystick firmware (command slew, `pos_err` clamp at ±0.5 m, CyberGear target slew at 3 rad/s).
 
 ## Commands

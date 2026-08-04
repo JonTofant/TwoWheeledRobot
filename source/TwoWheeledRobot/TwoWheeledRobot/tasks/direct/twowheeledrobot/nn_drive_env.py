@@ -67,6 +67,10 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._odometry_scale = torch.ones(self.num_envs, device=self.device)
         self._pitch_rate_bias = torch.zeros(self.num_envs, device=self.device)
         self._yaw_rate_bias = torch.zeros(self.num_envs, device=self.device)
+        # Roll equivalents of the pitch mounting/gyro bias (_pitch_bias lives on
+        # PureNNBalanceEnv; roll is only observed by this task, so both live here).
+        self._roll_bias = torch.zeros(self.num_envs, device=self.device)
+        self._roll_rate_bias = torch.zeros(self.num_envs, device=self.device)
 
         # Continuous force-noise state (filtered white noise on the platform).
         self._force_noise = torch.zeros(self.num_envs, 2, device=self.device)
@@ -226,12 +230,19 @@ class NNDriveEnv(PureNNBalanceEnv):
     def _get_observations(self) -> dict:
         self._enforce_cybergear_joint_state_limits()
         x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
+        roll = roll_from_projected_gravity(self.bno080.data.projected_gravity_b)
+        roll_rate = self.bno080.data.ang_vel_b[:, 1]
 
         # Sensor models: mounting bias, gyro biases, odometry scale, noise.
         pitch_m = pitch + self._pitch_bias + torch.randn_like(pitch) * self.cfg.pitch_noise_std
         pitch_rate_m = (
             pitch_rate + self._pitch_rate_bias + torch.randn_like(pitch_rate) * self.cfg.pitch_rate_noise_std
         )
+        # Roll comes off the same BNO080 as pitch, so it carries a mounting bias
+        # and gyro bias of the same magnitude — sampled separately because the
+        # two axes of one mount are independent errors, not a shared one.
+        roll_m = roll + self._roll_bias + torch.randn_like(roll) * self.cfg.pitch_noise_std
+        roll_rate_m = roll_rate + self._roll_rate_bias + torch.randn_like(roll_rate) * self.cfg.pitch_rate_noise_std
         yaw_rate_m = yaw_rate + self._yaw_rate_bias + torch.randn_like(yaw_rate) * self.cfg.yaw_rate_noise_std
         velocity_m = velocity * self._odometry_scale + torch.randn_like(velocity) * self.cfg.velocity_noise_std
         pos_err_m = self._commands.position_error(x_rel * self._odometry_scale)
@@ -252,6 +263,8 @@ class NNDriveEnv(PureNNBalanceEnv):
             cg_pos_norm,
             self._action_processor.command_current.clone(),
             self._cg_processor.tanh_action.clone(),
+            roll_m,
+            roll_rate_m,
         )
         obs = torch.where(self._obs_delay_samples.view(-1, 1) > 0, self._obs_delay, self._obs_now)
         self._obs_delay = self._obs_now.clone()
@@ -390,6 +403,10 @@ class NNDriveEnv(PureNNBalanceEnv):
         )
         self._yaw_rate_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(
             *self.cfg.yaw_rate_bias_radps_range
+        )
+        self._roll_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(*self.cfg.roll_bias_rad_range)
+        self._roll_rate_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(
+            *self.cfg.roll_rate_bias_radps_range
         )
         self._force_noise[env_ids_t] = 0.0
         self._force_noise_amp[env_ids_t] = torch.empty(n, device=self.device).uniform_(
