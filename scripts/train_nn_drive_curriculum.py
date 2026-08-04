@@ -136,8 +136,14 @@ def main() -> None:
                 str(exported_policy),
                 "--output",
                 str(drive_onnx),
+                # Must equal NNDriveEnvCfg.observation_space. Only the ONNX
+                # validation pass uses this (the graph itself is traced by
+                # play.py), so a stale value does not corrupt the export -- it
+                # silently skips validation instead: the mismatch raises inside
+                # validate(), and without --require-validation that is
+                # downgraded to a warning suggesting onnxruntime is missing.
                 "--obs-dim",
-                "18",
+                "20",
                 "--cg-outputs",
                 "4",
                 "--cg-authority-rad",
