@@ -117,7 +117,12 @@ class StandupEnvCfg(DirectRLEnvCfg):
     # spawn_z is computed per-episode from tilt angle via:
     #   z = SPAWN_UPRIGHT_Z * |cos(tilt)| + SPAWN_LATERAL_H * |sin(tilt)| + SPAWN_CLEARANCE
     # This gives ~0.09 m when upright, ~0.15 m when on side, ~0.09 m when inverted.
-    spawn_upright_z:  float = 0.06859   # m — nominal CoM height (wheel-centre height)
+    # Root-frame height that puts the wheels on the ground, NOT the wheel-centre
+    # height as this comment previously claimed. The robot's authored origin sits
+    # slightly below ground in the USD, and the root frame is ~17 mm above the
+    # wheel centres. Measured 2026-08-05 at settle: wheel centres 0.0512 m
+    # (= wheel_radius_m 0.05035 plus contact compression), root 0.0682 m.
+    spawn_upright_z:  float = 0.06859   # m — root height for wheels-on-ground
     spawn_lateral_h:  float = 0.13      # m — estimated half body width at CoM level
     spawn_clearance:  float = 0.04      # m — safety gap above computed contact height
 
