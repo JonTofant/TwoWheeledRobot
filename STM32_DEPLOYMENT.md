@@ -46,6 +46,32 @@ The simulation maps wheel actions to current with `wheel_current_max` from `stan
 
 ## Sign Convention
 
+### World axes (checked against the USD, 2026-08-05)
+
+```text
+Y   fore/aft   — forward is -Y. Driving is along this axis.
+X   lateral    — sideways lean (roll). A differential drive cannot correct it.
+Z   up         — yaw rotation is about this axis.
+```
+
+The axis *assignment* is what the simulation depends on: `pitch` reads the
+body-frame gravity Y component, `roll` reads X, yaw is about Z, and the
+disturbance `AXIS_*` constants in `pure_nn_components.py` follow the same map.
+
+The **sign** (forward = -Y, not +Y) does not affect any simulation result. The
+robot is close to symmetric, every disturbance range is symmetric about zero,
+and `x_rel`/`velocity` come from wheel odometry rather than world position, so
+the sign only decides which way the robot drives in the world.
+
+**It does matter on hardware.** "Positive velocity command" is defined by the
+wheel odometry sign, not by a world axis, so the firmware must map positive
+command to whichever physical direction the robot's own forward is — the same
+rule as the wheel-direction note below: follow the physical wiring, not the USD.
+Getting it backwards gives a robot that balances correctly and drives the wrong
+way in response to the joystick.
+
+### Wheel direction
+
 The left wheel USD is mirrored, so simulation negates left wheel torque:
 
 ```c
