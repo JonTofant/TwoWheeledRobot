@@ -203,6 +203,17 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     rew_pitch: float = 6.0
     rew_pitch_rate: float = 0.5
     rew_roll: float = 12.0                     # no legitimate reason to lean sideways, unlike pitch
+    # Linear partner to the quadratic above, added 2026-08-05. A pure quadratic
+    # has vanishing gradient as roll -> 0: at a 5 deg lean it is only ~0.036 per
+    # degree against ~1.0 reward/step, so the last few degrees are almost free
+    # and the policy parks at an arbitrary lean. The robot is symmetric (all
+    # four legs within 0.003 deg airborne) and the lean flips sign between
+    # training runs (-5.3, -11.0, +4.9 deg), so it is the policy breaking a
+    # symmetry nothing forces it to keep. At 1.0 this contributes 0.017/step at
+    # 1 deg with a constant 1.0/rad restoring gradient, which dominates the
+    # quadratic's 0.42/rad there. Watch for chatter about zero (the |.| kink);
+    # rew_roll_rate should damp it, and rew_roll_abs=0.0 disables the term.
+    rew_roll_abs: float = 1.0
     rew_roll_rate: float = 0.5
     # Same bounding argument as yaw_error: rates spike during a fall, and an
     # unbounded rate penalty would pay the policy to stop trying to recover.

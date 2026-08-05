@@ -672,7 +672,15 @@ class DriveReward:
             "yaw_error": -self.cfg.rew_yaw_error * yaw_err_pen.pow(2),
             "pitch": -self.cfg.rew_pitch * pitch.pow(2),
             "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate_pen.pow(2),
-            "roll": -self.cfg.rew_roll * roll.pow(2),
+            # Quadratic + linear. The quadratic alone has vanishing gradient as
+            # roll -> 0 (24*roll ~ 0.036 per degree at 5 deg, against ~1.0
+            # reward/step), which leaves an arbitrary few-degree lean nearly
+            # free. The robot is symmetric to 0.003 deg (measured airborne
+            # 2026-08-05), and the observed lean flips sign between training
+            # runs (-5.3, -11.0, +4.9 deg), so the lean is the policy breaking
+            # a symmetry nothing forces it to keep -- not a plant property. The
+            # linear term keeps a constant restoring gradient down to zero.
+            "roll": -self.cfg.rew_roll * roll.pow(2) - self.cfg.rew_roll_abs * roll.abs(),
             "roll_rate": -self.cfg.rew_roll_rate * roll_rate_pen.pow(2),
             "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
             "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
