@@ -7,39 +7,13 @@ import gymnasium as gym
 
 from . import agents
 
-##
-# Register the stand-up task.
-##
-
-gym.register(
-    id="Template-Twowheeledrobot-Standup-v0",
-    entry_point=f"{__name__}.standup_env:StandupEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point":    f"{__name__}.standup_env_cfg:StandupEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_standup_cfg:StandupPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Template-Twowheeledrobot-ResidualLQR-v0",
-    entry_point=f"{__name__}.residual_lqr_env:ResidualLqrEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point":    f"{__name__}.residual_lqr_env_cfg:ResidualLqrEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_residual_lqr_cfg:ResidualLqrPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Template-Twowheeledrobot-PureNNBalance-v0",
-    entry_point=f"{__name__}.pure_nn_balance_env:PureNNBalanceEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.pure_nn_balance_env_cfg:PureNNBalanceEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_pure_nn_balance_cfg:PureNNBalancePPORunnerCfg",
-    },
-)
+# The joystick-commanded drive task is the only trainable task here. The
+# Standup, ResidualLQR and PureNNBalance registrations were removed 2026-08-05
+# when the repository was narrowed to the MDPI actuators work.
+#
+# standup_env.py and pure_nn_balance_env.py remain on disk because NNDriveEnv
+# derives from them (NNDriveEnv -> PureNNBalanceEnv -> StandupEnv). They are
+# base classes now, not tasks, and are no longer reachable through gym.
 
 gym.register(
     id="Template-Twowheeledrobot-NNDrive-v0",

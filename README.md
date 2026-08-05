@@ -1,179 +1,131 @@
 # TwoWheeledRobot
 
-Isaac Lab extension for training a two-wheeled leg robot to stand itself up from fallen poses.
+Isaac Lab extension for a two-wheeled leg robot with four CyberGear leg joints and two
+current-controlled DDSM115 wheel motors, plus the STM32 deployment path for the policies
+trained here.
 
-The cleaned project keeps one task:
+Scope is the MDPI *Actuators* work: training a joystick-commanded drive/balance policy over
+domain randomization derived from measured DDSM115 unit-to-unit variation. The Standup,
+ResidualLQR and PureNNBalance tasks and the LQR tooling were removed on 2026-08-05.
+
+## Task
 
 ```text
-Template-Twowheeledrobot-Standup-v0
+Template-Twowheeledrobot-NNDrive-v0
 ```
 
-The policy controls four CyberGear leg joints and two DDSM115 wheel currents. Episodes start from sampled fallen orientations and terminate when the robot reaches a stable upright stance or times out.
+Velocity + yaw-rate joystick commands with integrated position/heading references, 20
+observations, 6 actions (4 CyberGear stance targets + 2 wheel currents), generated terrain
+(flat / bumps / 3-9 deg slopes), and per-episode randomization of actuator characteristics,
+mass/COM, odometry scale and IMU biases.
+
+`Template-Twowheeledrobot-NNDriveDemo-v0` is a presentation-only variant with a hand-built
+scene for stills and video. It is never trained against.
+
+The observation and action layouts are the deployment contract and are documented in
+`STM32_DEPLOYMENT.md`. They must stay aligned with the firmware.
 
 ## Layout
 
 ```text
-source/TwoWheeledRobot/
-  config/extension.toml
-  TwoWheeledRobot/
-    tasks/direct/twowheeledrobot/
-      __init__.py                  # Gym registration
-      standup_env.py               # task logic: actions, observations, rewards, resets
-      standup_env_cfg.py           # task parameters and reward weights
-      robot_cfg.py                 # USD articulation and actuator config
-      sim_params.py                # shared physics and hardware constants
-      agents/rsl_rl_standup_cfg.py # PPO runner config
-    docs/ColectedUSD_v2/           # robot USD asset
+source/TwoWheeledRobot/TwoWheeledRobot/
+  tasks/direct/twowheeledrobot/
+    __init__.py               # gym registration
+    nn_drive_env.py           # the task: actions, observations, rewards, resets
+    nn_drive_env_cfg.py       # task parameters, reward weights, randomization ranges
+    pure_nn_components.py     # observation/reward/command/disturbance building blocks
+    pure_nn_balance_env.py    # base class (NNDriveEnv -> PureNNBalanceEnv -> StandupEnv)
+    standup_env.py            # base class: scene, sensors, joint ids, motor model
+    nn_drive_demo_env.py      # presentation-only scene
+    robot_cfg.py              # USD articulation and actuator config
+    sim_params.py             # shared physics and hardware constants
+    agents/rsl_rl_nn_drive_cfg.py
+  docs/ColectedUSD_v2/        # robot USD asset
 
-scripts/rsl_rl/
-  train.py
-  play.py
-  cli_args.py
+scripts/
+  rsl_rl/{train,play,cli_args}.py
+  train_nn_drive_curriculum.py     # five-stage curriculum
+  benchmark_nn_drive.py            # scenario benchmark
+  diagnose_turn_failure.py         # velocity / yaw-rate sweeps
+  export_pure_nn_current_onnx.py   # TorchScript -> ONNX with deployment scaling
+  validate_onnx_policy.py
+  uart_policy_runner.py            # run an exported policy against hardware
+  test_policy_angle_sweep.py       # sign-convention sanity check, no hardware needed
+  record_isaac_demo.py             # stills/clips from the demo scene
+  list_envs.py
 
-RealImplementationCode/            # STM32 firmware-side implementation files
-STM32_DEPLOYMENT.md                # firmware deployment notes
+RealImplementationCode/     # STM32 firmware-side implementation
+STM32_DEPLOYMENT.md         # deployment contract: obs/action layout, sign conventions
+docs/experiments/           # dated experiment logs
 ```
 
-Generated files such as `logs/`, `outputs/`, `__pycache__/`, and egg-info are intentionally ignored and should not be committed.
-
-## Stand-Up Task
-
-Observation space: 18 values, manually normalized for firmware parity.
-
-```text
-[0:3]   projected_gravity_b
-[3:6]   body angular velocity / 10 rad/s
-[6:10]  CyberGear joint extension fractions
-[10:12] DDSM115 wheel velocities / 20.94 rad/s
-[12:18] previous action
-```
-
-`CyberGear joint extension fractions` are normalized CyberGear joint positions in this joint order:
-
-```text
-[front_left, front_right, back_left, back_right]
-```
-
-The physical joint limits are `front_left/back_right = [-10 deg, +90 deg]` and `front_right/back_left = [-90 deg, +10 deg]`. The policy sees those as normalized values near `[-1, +1]`, with sign flips on the mirrored joints so positive means "more extended" for every leg.
-
-Action space: 6 values in `[-1, 1]`.
-
-```text
-[0:4] CyberGear absolute joint targets
-[4]   left wheel current command
-[5]   right wheel current command
-```
-
-The left wheel torque is negated in simulation because the USD wheel is mirrored. Keep that sign convention aligned with firmware.
-
-The DDSM115 wheels are modeled as current/torque-controlled direct-drive actuators, never as position servos. Wheel joint stiffness and extra passive motor damping are zero, the PhysX peak limit is `2.0 Nm`, and the velocity limit is the documented `200 rpm` no-load speed (`20.94 rad/s`). The torque-speed curve already includes the losses that define no-load speed, so adding motor damping would double-count them.
-
-For conservative training, policy action `+/-1` maps to the rated torque envelope of `+/-0.96 Nm`, or `+/-1.28 A` with `Kt = 0.75 Nm/A`. The environment additionally clamps current to `2.7 A`, torque to `2.0 Nm`, and applies a linear torque-speed envelope that reaches zero torque at `200 rpm`.
-
-Useful validation points are: a free wheel should approach `200 rpm`, `1.5 A` should produce approximately `0.96-1.125 Nm`, and low-speed peak torque should never exceed `2.0 Nm`.
-
-The Waveshare interface also exposes current, velocity, position, mode, and error-code feedback at communication rates up to `500 Hz`. Its raw command ranges are `-8 A` to `+8 A` for current mode, `-330 rpm` to `+330 rpm` for speed mode, and `0 deg` to `360 deg` for position mode. This Isaac Lab task intentionally uses only current/torque mode. Bus overcurrent, phase-current, overtemperature, and five-second locked-rotor protection are not yet modeled as stateful faults.
+`logs/`, `outputs/`, `__pycache__/` and egg-info are generated and gitignored.
 
 ## Running
 
-From the repo root:
+Install the extension (editable) inside your Isaac Lab Python environment:
 
 ```bash
-python scripts/rsl_rl/train.py \
-  --task Template-Twowheeledrobot-Standup-v0 \
-  --headless --num_envs 4096
+python -m pip install -e source/TwoWheeledRobot
 ```
 
-Play a trained checkpoint:
+Train the full curriculum (five stages, auto-resuming, exports at the end):
 
 ```bash
-python scripts/rsl_rl/play.py \
-  --task Template-Twowheeledrobot-Standup-v0 \
-  --num_envs 1
+python scripts/train_nn_drive_curriculum.py --num_envs 4096 --headless
 ```
 
-Run the fixed-base DDSM115 current-driven free-spin test without loading RSL-RL:
+Single stage, or resume a specific run:
 
 ```bash
-python scripts/lqr_control.py \
-  --task Template-Twowheeledrobot-Standup-v0 \
-  --motor-test-current 0.25
+python scripts/rsl_rl/train.py --task Template-Twowheeledrobot-NNDrive-v0 \
+  --headless --num_envs 4096 env.curriculum_stage=3 env.terrain_mode=flat
 ```
 
-The default `free-spin` mode suspends the robot by fixing its base above the ground, exposes a physical-units `RobotState` to `compute_action()`, and converts the returned physical-units `RobotAction` current command into the environment action. Try `--motor-test-current 0.25`, `1.0`, `1.5`, or `2.7`. Use `--left-motor-test-current` and `--right-motor-test-current` for separate commands.
-
-Run the analytical LQR sign and DDSM115 motor-model diagnostic while the robot remains suspended:
+Benchmark and diagnose a trained policy:
 
 ```bash
-python scripts/lqr_control.py \
-  --task Template-Twowheeledrobot-Standup-v0 \
-  --test-mode lqr-model \
-  --artificial-pitch-deg 1.0
+python scripts/benchmark_nn_drive.py --policy <run>/exported/policy.pt --num_envs 64 --headless
+python scripts/diagnose_turn_failure.py --policy <run>/exported/policy.pt --headless --velocities 0.1 0.3 0.4 0.55
 ```
 
-This mode prints the analytical `A`, `B`, and `K` matrices, checks that `+1` and `-1` degree pitch produce opposite current commands, and passes the selected artificial pitch command through the shared DDSM115 current/torque model. It is not a balancing test because the wheels have no ground contact.
-
-After suspended-air signs and motor direction are confirmed, the separate floor-contact mode can be started with a small 0.5-3 degree initial pitch:
+Export for the STM32 (20 inputs, 6 outputs):
 
 ```bash
-python scripts/lqr_control.py \
-  --task Template-Twowheeledrobot-Standup-v0 \
-  --test-mode lqr-floor \
-  --floor-initial-pitch-deg 1.0
+python scripts/export_pure_nn_current_onnx.py --policy <run>/exported/policy.pt \
+  --output <run>/exported/policy_drive.onnx --obs-dim 20 --cg-outputs 4 \
+  --cg-authority-rad 1.5708 --i-max-a 2.0 --require-validation
 ```
 
-The CSV and live plots include wheel RPM, wheel angular velocity, desired current, saturated current, current-produced torque, torque-speed limit, and actual applied torque. Live plots use matplotlib and work with Docker display forwarding such as `xhost`. Disable them with `--no-plot`, or list every signal and group with `--list-signals`.
-
-Outputs are written under `logs/rsl_rl/standup_two_wheel/`.
-
-## UART Policy Runner
-
-Run an exported JIT policy against the STM32 over UART:
+Run against hardware over UART:
 
 ```bash
-python scripts/uart_policy_runner.py \
-  --policy logs/rsl_rl/standup_two_wheel/<run>/exported/policy.pt \
-  --port /dev/ttyACM0 \
-  --baud 115200
+python scripts/uart_policy_runner.py --policy <run>/exported/policy.pt --port /dev/ttyACM0 --baud 115200
 ```
 
-STM32 to host, one JSON object per line:
-
-```json
-{"roll":0.0,"pitch":1.57,"yaw":0.0,"gyro":[0.0,0.0,0.0],"cg":[0.0,0.0,0.0,0.0],"ddsm":[0.0,0.0]}
-```
-
-Host to STM32, one JSON object per line:
-
-```json
-{"cg_target":[0.0,0.0,0.0,0.0],"wheel_current":[0.0,0.0],"action":[0.0,0.0,0.0,0.0,0.0,0.0]}
-```
-
-Roll, pitch, yaw, gyro, and CyberGear angles are radians by default. Use `--degrees` if the STM32 packet sends degrees and deg/s. DDSM115 velocities are part of the observation and should be sent as `[left, right]` wheel angular velocity in rad/s using the same sign convention as simulation.
-
-To sanity-check policy outputs without the robot, run a synthetic roll/pitch sweep:
+Lint:
 
 ```bash
-python scripts/test_policy_angle_sweep.py \
-  --policy logs/rsl_rl/standup_two_wheel/<run>/exported/policy.pt
+ruff check .
+ruff format .
 ```
 
-This prints normalized actions, CyberGear target angles, and wheel current commands for upright, side-fallen, forward/back-fallen, and diagonal poses. Use it to catch obvious sign mistakes before trying UART on hardware.
+## Editing rules that matter
 
-## Developer Documentation
+- **Physical parameters and the motor model are duplicated by design** across `sim_params.py`
+  and `standup_env.py::_pre_physics_step()`. Change every copy together and re-verify.
+- **The observation/action contract is shared with firmware.** `STM32_DEPLOYMENT.md`,
+  `pure_nn_components.py::DriveObservationBuilder` and
+  `scripts/uart_policy_runner.py::build_observation()` must agree exactly, including the
+  wheel sign convention (left wheel torque is negated in sim because the USD is mirrored).
+- **`robot_cfg.py`** is the only place that should reference the USD path and Isaac actuator
+  groups. Check joint/body names there before referencing them elsewhere.
+- **DDSM115 wheels are current/torque-controlled, never position servos** — zero stiffness,
+  zero extra passive damping, PhysX peak torque 2.0 Nm, velocity limit 20.94 rad/s.
+- **Keep the actor network small** (`agents/rsl_rl_nn_drive_cfg.py`) — it must fit the STM32.
+- Change one concept at a time (motor physics vs. reward vs. observation) and re-verify with
+  the relevant diagnostic script rather than batching changes.
 
-- `CLAUDE.md` — task table, commands, and the editing rules that matter (duplicated physical
-  parameters, observation/action contracts, CSV schema consumers).
-- `STM32_DEPLOYMENT.md` — the deployment contract: observation/action layouts, sign conventions,
-  and what the firmware must do to stay aligned with the simulation.
-- `docs/experiments/` — dated experiment logs.
-
-The standalone architecture documents were removed on 2026-08-05; they described a layout two task
-additions out of date. Read the source for structure.
-
-## Tuning Notes
-
-- `standup_env_cfg.py` contains reward weights, spawn probabilities, success thresholds, and domain randomization.
-- `sim_params.py` contains timing, friction, damping, actuator gains, and the DDSM115 torque constant.
-- `robot_cfg.py` is the only place that should reference the USD path and Isaac actuator groups.
-- Keep the network in `agents/rsl_rl_standup_cfg.py` small if the policy will run on STM32. The current `[32, 32]` actor is sized for microcontroller deployment.
+There is no automated test suite. Verification means running the training, benchmark and
+diagnostic scripts and inspecting the output, since correctness here is "physically plausible
+sim behaviour", not unit-test pass/fail.

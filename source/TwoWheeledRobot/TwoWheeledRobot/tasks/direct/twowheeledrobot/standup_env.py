@@ -13,8 +13,8 @@ Main responsibilities:
     - Compute standup reward, reset fallen poses, and detect success/timeouts.
 
 Important consistency requirements:
-    - DDSM115 motor logic must stay consistent with residual_lqr_env.py until
-      it is extracted into a shared motor model.
+    - DDSM115 motor logic is the single copy now that residual_lqr_env.py is
+      gone; keep it consistent with sim_params.py.
     - Standup observation order should stay consistent with
       scripts/uart_policy_runner.py for exported policy deployment.
     - Reward weights in standup_env_cfg.py are consumed directly here.
@@ -296,10 +296,9 @@ class StandupEnv(DirectRLEnv):
                 [-1, 1]. The first four values command CyberGear joint targets;
                 the last two command left/right DDSM115 wheel current.
 
-        The DDSM115 current clamp and torque-speed limiter here must stay
-        behaviorally identical to residual_lqr_env.py until a shared motor
-        model is extracted. The left wheel effort is negated only because the
-        USD joint axis is mirrored.
+        The DDSM115 current clamp and torque-speed limiter live here only;
+        the residual_lqr_env.py copy was deleted with that task. The left wheel
+        effort is negated only because the USD joint axis is mirrored.
         """
         actions = actions.clamp(-1.0, 1.0)
         self._enforce_cybergear_joint_state_limits()

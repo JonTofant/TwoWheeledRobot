@@ -10,8 +10,7 @@ Edit here when:
     settings, or DDSM115/CyberGear constants used by the Isaac environments.
 
 Avoid changing here without also checking:
-    LQR physical parameters in residual_lqr_env.py, scripts/lqr_control.py,
-    scripts/calculate_lqr_gains.py, and hardware scaling in
+    hardware scaling in
     scripts/uart_policy_runner.py.
 
 
@@ -117,3 +116,15 @@ BEARING_DAMPING: float = 0.005   # Nm·s/rad
 # =========================================================================== #
 SOLVER_POSITION_ITERS: int = 8
 SOLVER_VELOCITY_ITERS: int = 4
+
+# =========================================================================== #
+#  Wheel geometry                                                              #
+# =========================================================================== #
+# DDSM115 rolling radius. Converts wheel joint angle/rate to robot odometry:
+#   x_rel    = 0.5 * (theta_L + theta_R) * R_WHEEL
+#   velocity = 0.5 * (omega_L + omega_R) * R_WHEEL
+# Lived in residual_lqr_env.py until 2026-08-05 (as
+# LQR_PHYSICAL_PARAMS.wheel_radius_m). That module was the ResidualLQR task and
+# was deleted with it; this single constant was the only thing the drive task
+# imported from it, so it moves here rather than keeping 500 lines alive.
+R_WHEEL: float = 0.05035   # m

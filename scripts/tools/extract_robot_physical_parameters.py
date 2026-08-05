@@ -36,7 +36,7 @@ WHEEL_LINK_NAMES = ["DDSM115_Simplified", "DDSM115_Simplified_01"]
 WHEEL_SPIN_AXIS_WORLD = (1.0, 0.0, 0.0)
 
 parser = argparse.ArgumentParser(description="Extract robot mass properties for 4-state/6-state LQR models.")
-parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-Standup-v0")
+parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-NNDrive-v0")
 parser.add_argument("--output", type=str, default="outputs/robot_physical_parameters.csv")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()

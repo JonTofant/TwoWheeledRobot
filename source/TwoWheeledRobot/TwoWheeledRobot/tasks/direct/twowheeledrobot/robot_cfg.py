@@ -10,7 +10,7 @@ Edit here when:
     articulation properties need to change.
 
 Avoid changing here without also checking:
-    Joint names used in standup_env.py, residual_lqr_env.py, lqr_control.py,
+    Joint names used in standup_env.py, nn_drive_env.py,
     contact sensor body names, and deployment documentation.
 """
 

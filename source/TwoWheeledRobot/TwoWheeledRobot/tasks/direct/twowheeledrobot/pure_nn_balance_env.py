@@ -26,8 +26,7 @@ from .pure_nn_components import (
     wrap_angle_rad,
     yaw_from_quat_wxyz,
 )
-from .residual_lqr_env import R_WHEEL
-from .sim_params import DDSM115_KT, DDSM115_NO_LOAD_SPEED, DDSM115_TAU_PEAK
+from .sim_params import DDSM115_KT, DDSM115_NO_LOAD_SPEED, DDSM115_TAU_PEAK, R_WHEEL
 from .standup_env import StandupEnv
 
 

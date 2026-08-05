@@ -38,13 +38,13 @@ from .pure_nn_components import (
     roll_from_projected_gravity,
     yaw_from_quat_wxyz,
 )
-from .residual_lqr_env import R_WHEEL
 from .sim_params import (
     DDSM115_KT,
     DDSM115_NO_LOAD_SPEED,
     DDSM115_TAU_PEAK,
     GROUND_DYNAMIC_FRICTION,
     GROUND_STATIC_FRICTION,
+    R_WHEEL,
 )
 
 
