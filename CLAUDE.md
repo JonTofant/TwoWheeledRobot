@@ -155,10 +155,11 @@ pre-commit run --all-files
 
 ## Architecture and editing rules
 
-Full file-by-file dependency detail lives in `ARCHITECTURE_DEPENDENCY_MAP.md`, `PROJECT_STRUCTURE_AUDIT.md`,
-and `DEVELOPER_GUIDE.md` — read those before non-trivial edits. They predate the `PureNNBalance` task
-(added after `ResidualLQR`), so cross-check current files rather than trusting those docs verbatim for
-that task. Key points that don't change:
+There is no separate architecture document. `ARCHITECTURE_DEPENDENCY_MAP.md`, `PROJECT_STRUCTURE_AUDIT.md`
+and `DEVELOPER_GUIDE.md` were deleted on 2026-08-05: they described the pre-`PureNNBalance` layout, had
+been wrong for two task additions, and this file already warned against trusting them. Read the source
+instead — the env inheritance chain is `NNDriveEnv → PureNNBalanceEnv → StandupEnv`, and `ResidualLqrEnv`
+also derives from `StandupEnv`. Key points:
 
 - **Physical parameters and motor model are duplicated by design (for now)**, across
   `sim_params.py`, `standup_env.py::_pre_physics_step()`, `residual_lqr_env.py::_pre_physics_step()`,

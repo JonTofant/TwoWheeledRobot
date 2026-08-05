@@ -162,11 +162,14 @@ This prints normalized actions, CyberGear target angles, and wheel current comma
 
 ## Developer Documentation
 
-For code navigation and safe manual editing, read:
+- `CLAUDE.md` — task table, commands, and the editing rules that matter (duplicated physical
+  parameters, observation/action contracts, CSV schema consumers).
+- `STM32_DEPLOYMENT.md` — the deployment contract: observation/action layouts, sign conventions,
+  and what the firmware must do to stay aligned with the simulation.
+- `docs/experiments/` — dated experiment logs.
 
-- `DEVELOPER_GUIDE.md`
-- `PROJECT_STRUCTURE_AUDIT.md`
-- `ARCHITECTURE_DEPENDENCY_MAP.md`
+The standalone architecture documents were removed on 2026-08-05; they described a layout two task
+additions out of date. Read the source for structure.
 
 ## Tuning Notes
 
