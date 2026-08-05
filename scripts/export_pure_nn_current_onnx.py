@@ -20,6 +20,7 @@ which is not traceable as a child module in some Isaac/PyTorch builds.
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import torch
@@ -114,7 +115,12 @@ def main() -> None:
         default=0,
         help="Number of leading CyberGear outputs (0 for balance policies, 4 for NNDrive).",
     )
-    parser.add_argument("--cg-authority-rad", type=float, default=0.45, help="CyberGear tanh scale (rad).")
+    parser.add_argument(
+        "--cg-authority-rad",
+        type=float,
+        default=math.pi / 2,
+        help="CyberGear tanh scale (rad). Must equal NNDriveEnvCfg.cg_action_authority_rad.",
+    )
     parser.add_argument("--samples", type=int, default=256)
     parser.add_argument("--tolerance", type=float, default=1.0e-4)
     parser.add_argument(

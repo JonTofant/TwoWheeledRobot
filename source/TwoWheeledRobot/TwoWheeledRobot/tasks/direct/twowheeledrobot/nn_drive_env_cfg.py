@@ -154,7 +154,28 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     forced_yaw_rate_cmd_radps: float = 0.0
 
     # ── CyberGear stance action ──────────────────────────────────────────────
-    cg_action_authority_rad: float = 0.45      # ~26 deg of stance authority around zero
+    # tanh scale for the CyberGear actions. At the previous 0.45 rad (~26 deg)
+    # the policy could only reach +25.8 deg of extension even though the joint
+    # allows +90 deg -- so two thirds of the extend travel was unreachable, and
+    # the reachable set was [-10, +25.8] deg rather than the mechanical
+    # [-10, +90]. That mattered: at steady state three of four joints sat on the
+    # -10 deg retract stop while the fourth ran to 86% of this cap, i.e. the
+    # legs were out of authority in both directions at once, which is what made
+    # platform pitch and roll compete instead of being independently
+    # controllable (pitch regressed 0.76 -> 6.66 deg when roll became a live
+    # objective).
+    #
+    # pi/2 makes the full +90 deg reachable. Two consequences to watch:
+    #   - the retract side still clamps at the -10 deg joint limit, so
+    #     tanh(a) < -0.111 all maps to the stop -- a larger saturated region
+    #     than before (it was tanh(a) < -0.388).
+    #   - gain near neutral rises 3.5x (90 deg vs 26 deg per unit tanh), so fine
+    #     stance control is coarser. cg_target_slew_radps = 3.0 still bounds the
+    #     rate; watch for leg jitter and raise the slew limit if it appears.
+    # A per-joint asymmetric mapping would remove both (map t in [-1,1] onto
+    # [joint_lo, joint_hi] directly), but it breaks the constant-scale ONNX
+    # export contract, so it is deliberately not done here.
+    cg_action_authority_rad: float = math.pi / 2   # 90 deg: full mechanical extend travel
     cg_target_slew_radps: float = 3.0          # firmware-side target slew limit
     cg_calib_bias_rad_range: tuple = (math.radians(-1.0), math.radians(1.0))
     # CyberGear kp/kd are *commanded* over the bus in MIT mode (they match the

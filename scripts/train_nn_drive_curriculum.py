@@ -16,6 +16,7 @@ the policy is exported to TorchScript/ONNX with the 6-output deployment scaling
 from __future__ import annotations
 
 import argparse
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -61,7 +62,7 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--i-max-a", type=float, default=2.0)
-    parser.add_argument("--cg-authority-rad", type=float, default=0.45)
+    parser.add_argument("--cg-authority-rad", type=float, default=math.pi / 2)  # must match NNDriveEnvCfg
     parser.add_argument("--skip-export", action="store_true")
     parser.add_argument("--headless", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")

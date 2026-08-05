@@ -188,7 +188,7 @@ returns 6 commands.
  5  yaw_rate / 4.0 rad/s
  6  velocity_cmd / 1.0 m/s   slew-limited joystick command (see below)
  7  yaw_rate_cmd / 2.0 rad/s slew-limited joystick command
- 8-11  cg_pos / 0.45 rad     CyberGear joint angles [fl, fr, bl, br]
+ 8-11  cg_pos / 1.5708 rad   CyberGear joint angles [fl, fr, bl, br] (pi/2)
 12-13  prev_current / 2.0 A  previous wheel current commands [left, right]
 14-17  prev_cg_action        previous tanh CyberGear actions, already [-1, 1]
 18  roll / 25 deg            rad, from the same IMU as pitch
@@ -231,11 +231,23 @@ the same terms give station keeping, including on inclines.
 
 ```text
 0-3  CyberGear position targets in rad [fl, fr, bl, br]
-     range +-0.45 rad around zero stance; firmware MUST additionally:
+     range +-1.5708 rad (pi/2) around zero stance; firmware MUST additionally:
        - clamp to joint limits (fl/br: [-10, +90] deg, fr/bl: [-90, +10] deg)
        - slew-limit the applied target at 3.0 rad/s (0.045 rad per 15 ms tick)
 4-5  left/right DDSM115 current commands in A (+-2.0 A)
 ```
+
+**The CyberGear tanh scale changed 0.45 -> pi/2 rad on 2026-08-05.** At 0.45 the
+policy could only command +-25.8 deg, so two thirds of the joint's +90 deg
+extend travel was unreachable and the legs saturated in both directions at once.
+The joint limits themselves are unchanged; only the action scale is. The
+firmware's joint-limit clamp below is now doing real work on the extend side as
+well as the retract side -- it must be present, not assumed redundant.
+
+Note the scale is symmetric while the joint range is not ([-10, +90] deg), so
+`tanh(a) < -0.111` all lands on the -10 deg stop. That saturated region is
+expected. Do not "fix" it by re-centring the tanh mapping: zero action must keep
+mapping to zero stance, because that is the failsafe pose on hardware.
 
 Train all curriculum stages (flat → commands → pushes → terrain) and export:
 
@@ -249,7 +261,7 @@ Manual export from an existing `policy.pt`:
 python scripts/export_pure_nn_current_onnx.py \
   --policy logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy.pt \
   --output logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy_drive.onnx \
-  --obs-dim 20 --cg-outputs 4 --cg-authority-rad 0.45 --i-max-a 2.0
+  --obs-dim 20 --cg-outputs 4 --cg-authority-rad 1.5708 --i-max-a 2.0
 ```
 
 Benchmark station keeping, command tracking, and disturbances (add
