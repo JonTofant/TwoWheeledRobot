@@ -246,8 +246,15 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     rew_delta_current: float = 0.05            # actuation smoothness — matters on hardware
     # Centring the legs is now cheap: hip fore/aft is the actuator that levels
     # the platform and shifts the contact point under the COM without driving.
-    rew_cg_pos: float = 0.02
-    rew_cg_rate: float = 0.8                   # but discourage flapping
+    # Units are per rad^2 of commanded leg angle, NOT per tanh unit (changed
+    # 2026-08-05 together with the DriveReward terms). Calibrated so the
+    # physical penalty matches the last configuration that trained stably --
+    # authority 0.45 rad with rew_cg_pos = 0.02 / rew_cg_rate = 0.8 in tanh
+    # units -- by dividing by 0.45^2 = 0.2025. So the extra travel unlocked by
+    # cg_action_authority_rad = pi/2 is available when it earns its keep, but is
+    # no longer free. Raise rew_cg_pos if the policy still stands too tall.
+    rew_cg_pos: float = 0.0988                 # 0.02 / 0.45^2
+    rew_cg_rate: float = 3.951                 # 0.8 / 0.45^2, discourages flapping
 
     # ── Reset state ──────────────────────────────────────────────────────────
     reset_pitch_range_deg: float = 12.0

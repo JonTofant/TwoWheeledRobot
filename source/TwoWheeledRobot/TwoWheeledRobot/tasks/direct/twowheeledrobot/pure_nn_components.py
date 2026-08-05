@@ -684,8 +684,19 @@ class DriveReward:
             "roll_rate": -self.cfg.rew_roll_rate * roll_rate_pen.pow(2),
             "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
             "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
-            "cg_pos": -self.cfg.rew_cg_pos * cg_tanh.pow(2).sum(dim=1),
-            "cg_rate": -self.cfg.rew_cg_rate * cg_delta_tanh.pow(2).sum(dim=1),
+            # Penalize the PHYSICAL leg angle, not the tanh action. These were
+            # on the dimensionless action until 2026-08-05, which meant the cost
+            # of a stance was independent of what that stance physically was:
+            # raising cg_action_authority_rad 0.45 -> pi/2 tripled what an action
+            # did while leaving what it cost identical. The policy duly kept
+            # commanding |tanh| ~ 0.92, which went from 24 deg of leg extension
+            # to 82 deg -- standing at near-full extension, COM as high as the
+            # mechanism allows, and fall rates of 0.53-0.94 across every
+            # benchmark scenario. Expressed in radians the weights are
+            # authority-invariant, so changing the range can no longer silently
+            # rescale the reward.
+            "cg_pos": -self.cfg.rew_cg_pos * (cg_tanh * self.cfg.cg_action_authority_rad).pow(2).sum(dim=1),
+            "cg_rate": -self.cfg.rew_cg_rate * (cg_delta_tanh * self.cfg.cg_action_authority_rad).pow(2).sum(dim=1),
         }
         if terminal_penalty is None:
             terminal_penalty = torch.zeros_like(pitch)
