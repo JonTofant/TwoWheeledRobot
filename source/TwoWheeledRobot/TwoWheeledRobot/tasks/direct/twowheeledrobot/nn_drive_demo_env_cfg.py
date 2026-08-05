@@ -120,7 +120,7 @@ class NNDriveDemoEnvCfg(NNDriveEnvCfg):
         # A deterministic hero shot: keep the motor model and sensor contract,
         # drop the per-episode randomization that would make robots differ.
         self.body_mass_scale_range = (1.0, 1.0)
-        self.com_offset_x_range_m = (0.0, 0.0)
+        self.com_offset_y_range_m = (0.0, 0.0)
         self.com_offset_z_range_m = (0.0, 0.0)
         self.odometry_scale_range = (1.0, 1.0)
         self.pitch_bias_rad_range = (0.0, 0.0)

@@ -147,11 +147,18 @@ DIST_SINE_DIAGNOSTIC = 6
 
 # Platform body-frame axis indices for external forces.
 #
-# Verified in sim (2026-07-28): driving both wheels forward moves the robot
-# along +Y, and the platform body quaternion is identity, so body axes are world
-# axes. Y is therefore the fore/aft axis (the one the robot can answer by
-# driving) and X is lateral (which a differential drive cannot correct — it can
-# only resist it through wheel friction).
+# Verified in sim (2026-07-28) and against the USD world frame (2026-08-05):
+# driving moves the robot along the Y axis, and the platform body quaternion is
+# identity, so body axes are world axes. Y is therefore the fore/aft axis (the
+# one the robot can answer by driving) and X is lateral (which a differential
+# drive cannot correct — it can only resist it through wheel friction). Z is
+# the yaw axis.
+#
+# The 2026-07-28 note here claimed forward was +Y; per the USD it is -Y. That
+# sign is immaterial to results — the robot is close to symmetric, every
+# disturbance range below is symmetric about zero, and x_rel/velocity come from
+# wheel odometry rather than world position, so it only flips which way the
+# robot drives. Only the axis ASSIGNMENT matters, and that is correct.
 #
 # These were previously transposed: the +-8 N "human push" went to index 0 and
 # so was applied sideways, while the fore/aft push the robot can actually

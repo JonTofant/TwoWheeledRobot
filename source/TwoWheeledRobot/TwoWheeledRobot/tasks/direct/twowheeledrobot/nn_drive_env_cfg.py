@@ -231,8 +231,20 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # to learn to re-trim from pos_err/velocity, which it only learns if the
     # offsets in training are big enough to matter. Widened from +-1.5 cm /
     # +-1.2 deg, which real COM tolerance and BNO080 mounting easily exceed.
-    com_offset_x_range_m: tuple = (-0.030, 0.030)       # platform COM shift (payload model)
-    com_offset_z_range_m: tuple = (-0.010, 0.015)
+    #
+    # RENAMED FROM com_offset_x_range_m 2026-08-05. It was applied to coms[..., 0]
+    # = X, which is the LATERAL axis (confirmed against the USD world frame:
+    # Y is fore/aft, X is sideways lean, Z is yaw). The trim error described
+    # above is a fore/aft quantity — it moves the pitch balance point — so it
+    # belongs on Y. Consequences of the transposition: the "drives away" trim
+    # randomization this comment justifies had never actually trained, and a
+    # +-3 cm sideways COM offset was instead perturbing roll, on an axis the
+    # policy could not even observe before 1e20e5f. Same class of bug as the
+    # transposed disturbance-force axes fixed in e518082, missed in that pass.
+    # The lateral offset is dropped rather than kept: it was never intended, and
+    # +-3 cm off-centre is a large payload asymmetry to demand.
+    com_offset_y_range_m: tuple = (-0.030, 0.030)       # fore/aft platform COM shift (trim error)
+    com_offset_z_range_m: tuple = (-0.010, 0.015)       # vertical COM shift
     odometry_scale_range: tuple = (0.97, 1.03)          # wheel-radius error seen by obs only
     pitch_bias_rad_range: tuple = (math.radians(-3.0), math.radians(3.0))  # IMU mounting error
     payload_pitch_torque_nm_range: tuple = (-0.4, 0.4)  # persistent COM-shift torque

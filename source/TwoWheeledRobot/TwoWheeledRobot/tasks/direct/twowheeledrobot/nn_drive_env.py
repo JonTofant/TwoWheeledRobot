@@ -141,8 +141,8 @@ class NNDriveEnv(PureNNBalanceEnv):
         print("NN DRIVE EXTRA RANDOMIZATION")
         print(f"body mass/inertia scale: active, range {self.cfg.body_mass_scale_range}")
         print(
-            "platform COM offset: active, x "
-            f"{self.cfg.com_offset_x_range_m} m, z {self.cfg.com_offset_z_range_m} m"
+            "platform COM offset: active, y (fore/aft) "
+            f"{self.cfg.com_offset_y_range_m} m, z {self.cfg.com_offset_z_range_m} m"
         )
         print(f"odometry scale (obs): active, range {self.cfg.odometry_scale_range}")
         print(f"pitch-rate gyro bias: active, range {self.cfg.pitch_rate_bias_radps_range} rad/s")
@@ -440,10 +440,13 @@ class NNDriveEnv(PureNNBalanceEnv):
         inertias[env_ids_cpu] = self._default_body_inertias[env_ids_cpu] * scale.unsqueeze(-1)
         self.robot.root_physx_view.set_inertias(inertias, env_ids_cpu)
 
+        # Column 1 is Y = fore/aft, the axis the pitch balance point lives on.
+        # This was column 0 (X = lateral) until 2026-08-05; see the
+        # com_offset_y_range_m comment in the cfg for what that cost.
         coms = self.robot.root_physx_view.get_coms().clone()
-        com_dx = torch.empty(n, dtype=coms.dtype).uniform_(*self.cfg.com_offset_x_range_m)
+        com_dy = torch.empty(n, dtype=coms.dtype).uniform_(*self.cfg.com_offset_y_range_m)
         com_dz = torch.empty(n, dtype=coms.dtype).uniform_(*self.cfg.com_offset_z_range_m)
         coms[env_ids_cpu] = self._default_body_coms[env_ids_cpu]
-        coms[env_ids_cpu, self._platform_body_col, 0] += com_dx
+        coms[env_ids_cpu, self._platform_body_col, 1] += com_dy
         coms[env_ids_cpu, self._platform_body_col, 2] += com_dz
         self.robot.root_physx_view.set_coms(coms, env_ids_cpu)
