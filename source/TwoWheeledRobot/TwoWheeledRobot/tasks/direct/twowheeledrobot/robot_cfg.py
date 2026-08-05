@@ -84,8 +84,10 @@ TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
         ),
         # ------------------------------------------------------------------ #
         # CyberGear leg motors — MIT control (PD + torque feedforward).      #
-        #   Gains from cybergear.c:  kp = 3.0 Nm/rad,  kd = 0.5 Nm·s/rad   #
+        #   Gains from cybergear.c:  kp = 30.0 Nm/rad, kd = 3.0 Nm·s/rad   #
         #   (kp range 0–500 Nm/rad, kd range 0–5 Nm·s/rad in firmware)      #
+        #   Verified against the firmware repo 2026-08-05; this comment      #
+        #   previously read 3.0 / 0.5, which matched nothing.                #
         #   Torque feedforward is zero here; IK sets position target only.   #
         # ------------------------------------------------------------------ #
         "cybergear_joints": ImplicitActuatorCfg(
