@@ -1,8 +1,7 @@
 # TwoWheeledRobot
 
 Isaac Lab extension for a two-wheeled leg robot with four CyberGear leg joints and two
-current-controlled DDSM115 wheel motors, plus the STM32 deployment path for the policies
-trained here.
+current-controlled DDSM115 wheel motors. The STM32 firmware lives in a separate repository.
 
 Scope is the MDPI *Actuators* work: training a joystick-commanded drive/balance policy over
 domain randomization derived from measured DDSM115 unit-to-unit variation. The Standup,
@@ -52,7 +51,6 @@ scripts/
   record_isaac_demo.py             # stills/clips from the demo scene
   list_envs.py
 
-RealImplementationCode/     # STM32 firmware-side implementation
 STM32_DEPLOYMENT.md         # deployment contract: obs/action layout, sign conventions
 docs/experiments/           # dated experiment logs
 ```
