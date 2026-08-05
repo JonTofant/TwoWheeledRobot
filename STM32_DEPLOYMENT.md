@@ -88,7 +88,7 @@ positive in the same sense as the sim's `roll_from_projected_gravity`, i.e.
 `atan2(g_x, -g_z)` on body-frame projected gravity. `roll_rate` is the gyro
 component about that same axis. Getting this sign wrong is worse than omitting
 the values, because the policy actively servos roll with the legs — verify it
-against `scripts/test_policy_angle_sweep.py` before driving the robot.
+on the bench before driving the robot.
 
 ### Joystick contract (must run on the STM32 every 15 ms tick)
 
@@ -160,16 +160,10 @@ Files to keep aligned for this task: `nn_drive_env.py`, `nn_drive_env_cfg.py`,
 CyberGearStanceProcessor), `agents/rsl_rl_nn_drive_cfg.py`, and the STM32
 inference + joystick code.
 
-## UART Runner
+## Host <-> STM32 message format
 
-Host-side runner:
-
-```bash
-python scripts/uart_policy_runner.py \
-  --policy logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy.pt \
-  --port /dev/ttyACM0 \
-  --baud 115200
-```
+The firmware lives in a separate repository; there is no host-side runner here.
+The wire format the policy expects is recorded for reference.
 
 STM32 sends JSON lines:
 

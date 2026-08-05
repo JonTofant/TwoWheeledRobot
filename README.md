@@ -49,8 +49,6 @@ scripts/
   diagnose_turn_failure.py         # velocity / yaw-rate sweeps
   export_pure_nn_current_onnx.py   # TorchScript -> ONNX with deployment scaling
   validate_onnx_policy.py
-  uart_policy_runner.py            # run an exported policy against hardware
-  test_policy_angle_sweep.py       # sign-convention sanity check, no hardware needed
   record_isaac_demo.py             # stills/clips from the demo scene
   list_envs.py
 
@@ -97,12 +95,6 @@ python scripts/export_pure_nn_current_onnx.py --policy <run>/exported/policy.pt 
   --cg-authority-rad 1.5708 --i-max-a 2.0 --require-validation
 ```
 
-Run against hardware over UART:
-
-```bash
-python scripts/uart_policy_runner.py --policy <run>/exported/policy.pt --port /dev/ttyACM0 --baud 115200
-```
-
 Lint:
 
 ```bash
@@ -114,10 +106,10 @@ ruff format .
 
 - **Physical parameters and the motor model are duplicated by design** across `sim_params.py`
   and `standup_env.py::_pre_physics_step()`. Change every copy together and re-verify.
-- **The observation/action contract is shared with firmware.** `STM32_DEPLOYMENT.md`,
-  `pure_nn_components.py::DriveObservationBuilder` and
-  `scripts/uart_policy_runner.py::build_observation()` must agree exactly, including the
-  wheel sign convention (left wheel torque is negated in sim because the USD is mirrored).
+- **The observation/action contract is shared with firmware**, which lives in a separate
+  repository. `STM32_DEPLOYMENT.md` and `pure_nn_components.py::DriveObservationBuilder` must
+  agree with it exactly, including the wheel sign convention (left wheel torque is negated in
+  sim because the USD is mirrored). Changing the layout is a breaking change for the firmware.
 - **`robot_cfg.py`** is the only place that should reference the USD path and Isaac actuator
   groups. Check joint/body names there before referencing them elsewhere.
 - **DDSM115 wheels are current/torque-controlled, never position servos** — zero stiffness,

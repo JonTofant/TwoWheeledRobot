@@ -16,7 +16,7 @@ Important consistency requirements:
     - DDSM115 motor logic is the single copy now that residual_lqr_env.py is
       gone; keep it consistent with sim_params.py.
     - Standup observation order should stay consistent with
-      scripts/uart_policy_runner.py for exported policy deployment.
+      the STM32 firmware (separate repository) for policy deployment.
     - Reward weights in standup_env_cfg.py are consumed directly here.
 
 The policy learns to self-right from any fallen position to the upright
@@ -359,7 +359,7 @@ class StandupEnv(DirectRLEnv):
         """Build the 18-value standup policy observation.
 
         The observation order is documented in standup_env_cfg.py and mirrored
-        by scripts/uart_policy_runner.py for hardware deployment. Change the
+        by the STM32 firmware for hardware deployment. Change the
         order only with a coordinated policy/export/deployment update.
         """
         self._enforce_cybergear_joint_state_limits()

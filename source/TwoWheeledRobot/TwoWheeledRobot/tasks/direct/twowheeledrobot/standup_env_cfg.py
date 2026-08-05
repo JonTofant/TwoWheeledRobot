@@ -11,7 +11,7 @@ Edit here when:
     training gains, wheel current scaling, or domain randomization.
 
 Avoid changing here without also checking:
-    standup_env.py reward/action/observation logic, scripts/uart_policy_runner.py
+    standup_env.py reward/action/observation logic, the STM32 firmware
     deployment normalization, and residual_lqr_env_cfg.py inherited values.
 
 The policy learns to self-right the robot from any fallen orientation (side,

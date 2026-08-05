@@ -11,7 +11,7 @@ Edit here when:
 
 Avoid changing here without also checking:
     hardware scaling in
-    scripts/uart_policy_runner.py.
+    the STM32 firmware (separate repository).
 
 
 Timing
