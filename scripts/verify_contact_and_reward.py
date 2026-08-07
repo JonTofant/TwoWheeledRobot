@@ -76,16 +76,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     u = env.unwrapped
 
 
-    check(
-        "fall_mode is contact",
-        u.cfg.fall_mode == "contact",
-        f"fall_mode={u.cfg.fall_mode!r}",
-    )
-    check(
-        "contact sensor constructed",
-        u.ground_contact is not None and u._contact_nonwheel_cols is not None,
-        f"sensor={'present' if u.ground_contact is not None else 'MISSING'}",
-    )
+    contact_mode = u.cfg.fall_mode == "contact"
+    print(f"[INFO] fall_mode={u.cfg.fall_mode!r} "
+          f"({'contact checks active' if contact_mode else 'contact checks skipped'})")
+    if contact_mode:
+        check(
+            "contact sensor constructed",
+            u.ground_contact is not None and u._contact_nonwheel_cols is not None,
+            f"sensor={'present' if u.ground_contact is not None else 'MISSING'}",
+        )
 
     spawn_steps = 5  # 75 ms: long enough to seat the 1 cm drop, too short to fall
     term_span: dict[str, list[float]] = {}
@@ -112,17 +111,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     actions = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
                 obs, _, _, _, _ = env.step(actions)
 
-                forces = u.ground_contact.data.net_forces_w
-                wheel_peak = torch.maximum(
-                    wheel_peak,
-                    torch.linalg.vector_norm(forces[:, u._contact_wheel_cols, :], dim=-1).max(dim=1).values,
-                )
-                nonwheel_peak = torch.maximum(
-                    nonwheel_peak,
-                    torch.linalg.vector_norm(forces[:, u._contact_nonwheel_cols, :], dim=-1)
-                    .max(dim=1)
-                    .values,
-                )
+                if contact_mode:
+                    forces = u.ground_contact.data.net_forces_w
+                    wheel_peak = torch.maximum(
+                        wheel_peak,
+                        torch.linalg.vector_norm(forces[:, u._contact_wheel_cols, :], dim=-1)
+                        .max(dim=1)
+                        .values,
+                    )
+                    nonwheel_peak = torch.maximum(
+                        nonwheel_peak,
+                        torch.linalg.vector_norm(forces[:, u._contact_nonwheel_cols, :], dim=-1)
+                        .max(dim=1)
+                        .values,
+                    )
                 # reward_total is post-clamp; the pre-clamp sum is what must be
                 # >= 0. terminal is excluded: it is a one-off episode-end cost,
                 # not a per-step shaping term.
@@ -162,37 +164,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         f"vs expected <= {expected_deg:.2f} deg "
         f"(base {u.cfg.reset_pitch_range_deg:.1f} deg, scale {scales})",
     )
-    check(
-        "wheels report contact force",
-        bool((wheel_peak > 0.0).all()),
-        f"{int((wheel_peak > 0.0).sum())}/{u.num_envs} envs saw non-zero wheel force, "
-        f"peak={wheel_peak.max().item():.2f} N "
-        "(all-zero means activate_contact_sensors did not take)",
-    )
-    spawn_hits = int((nonwheel_peak > u.cfg.contact_force_threshold_n).sum())
-    check(
-        "spawn does not self-terminate",
-        spawn_hits == 0,
-        f"{spawn_hits}/{u.num_envs} envs had non-wheel contact above "
-        f"{u.cfg.contact_force_threshold_n:.2f} N within {spawn_steps} steps of reset "
-        f"(spawn_extra_clearance_m={u.cfg.spawn_extra_clearance_m}, max tilt {spawn_tilt:.1f} deg)",
-    )
+    if contact_mode:
+        check(
+            "wheels report contact force",
+            bool((wheel_peak > 0.0).all()),
+            f"{int((wheel_peak > 0.0).sum())}/{u.num_envs} envs saw non-zero wheel force, "
+            f"peak={wheel_peak.max().item():.2f} N "
+            "(all-zero means activate_contact_sensors did not take)",
+        )
+        spawn_hits = int((nonwheel_peak > u.cfg.contact_force_threshold_n).sum())
+        check(
+            "spawn does not self-terminate",
+            spawn_hits == 0,
+            f"{spawn_hits}/{u.num_envs} envs had non-wheel contact above "
+            f"{u.cfg.contact_force_threshold_n:.2f} N within {spawn_steps} steps of reset "
+            f"(max tilt {spawn_tilt:.1f} deg)",
+        )
 
     # Phase B — reward invariant. Random actions deliberately, to drive the robot
     # into tipped, high-rate, high-current, full-swing-leg states. That is exactly
     # where an unbounded penalty hides: it is how the uncapped cg_rate term
     # (-32/step) was found.
     _, _, lo, hi, stress_tilt, _ = rollout(args_cli.num_steps, random_actions=True)
+    # The penalty-based reward's invariant is weaker than ">= 0" but is the one
+    # its clamps were calibrated for: no per-step penalty may exceed what the
+    # robot forfeits by falling, or diving for the floor becomes optimal. That
+    # forfeit is rew_alive + rew_vel_track + rew_yaw_rate_track.
+    forfeit = u.cfg.rew_alive + u.cfg.rew_vel_track + u.cfg.rew_yaw_rate_track
     check(
-        "per-step reward is non-negative",
-        lo.item() >= 0.0,
-        f"min pre-clamp per-step reward = {lo.item():.4f} over {args_cli.num_steps} steps "
-        f"with random actions (max tilt reached {stress_tilt:.1f} deg)",
+        "no per-step reward below the fall forfeit",
+        lo.item() > -forfeit,
+        f"min pre-clamp per-step reward = {lo.item():.4f} vs forfeit -{forfeit:.2f} "
+        f"over {args_cli.num_steps} steps with random actions "
+        f"(max tilt reached {stress_tilt:.1f} deg)",
     )
     check(
         "reward ceiling is not truncating",
-        hi.item() < u.cfg.reward_total_max,
-        f"max observed {hi.item():.3f} vs reward_total_max {u.cfg.reward_total_max}",
+        hi.item() < 3.0,
+        f"max observed {hi.item():.3f} vs the 3.0 total clamp",
     )
 
     # A term pinned to one value across a random-action rollout has no gradient
@@ -202,7 +211,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # the latter letting the legs park at an extreme deflection whose COM shift
     # put the robot into a 15-24 deg lean. Both were output caps; there are none
     # left, and this check is what keeps it that way.
-    dead = {k: v for k, v in term_span.items() if (v[1] - v[0]) < 1.0e-4}
+    # With leg_action_mode="fixed" the CyberGear terms are structurally zero, not
+    # broken — the policy emits no leg actions for them to price.
+    structurally_zero = {"cg_pos", "cg_rate"} if u.cfg.leg_action_mode == "fixed" else set()
+    # Only a term pinned at a NON-ZERO constant is saturated. Pinned at exactly
+    # zero means inactive, which several terms are by design: position_far only
+    # bites past the 0.5 m clamp, the pitch/roll deadbands are zero inside their
+    # bands, and the CyberGear terms are structurally zero with the legs fixed.
+    # Flagging those would train the reader to ignore this check.
+    dead = {
+        k: v
+        for k, v in term_span.items()
+        if (v[1] - v[0]) < 1.0e-4 and abs(v[0]) > 1.0e-9 and k not in structurally_zero
+    }
     check(
         "no reward term has a dead gradient",
         not dead,

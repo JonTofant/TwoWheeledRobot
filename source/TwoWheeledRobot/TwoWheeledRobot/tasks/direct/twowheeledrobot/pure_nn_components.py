@@ -608,7 +608,15 @@ class DriveObservationBuilder:
             [pos_err, velocity, pitch, pitch_rate, yaw_err, yaw_rate, velocity_cmd, yaw_rate_cmd], dim=1
         )
         attitude = torch.stack([roll, roll_rate], dim=1)
-        obs = torch.cat([scalars, cg_pos_norm, previous_current, previous_cg_action, attitude], dim=1)
+        # With the legs pinned, cg_pos_norm and previous_cg_action are constants
+        # (the fixed stance mapped back through the same path), so they are eight
+        # dead inputs. Dropping them takes the vector 20 -> 12 without disturbing
+        # indices 0-7, which keep their firmware meaning either way.
+        if self.cfg.include_cg_obs:
+            blocks = [scalars, cg_pos_norm, previous_current, previous_cg_action, attitude]
+        else:
+            blocks = [scalars, previous_current, attitude]
+        obs = torch.cat(blocks, dim=1)
         return torch.nan_to_num(obs / self.scale, nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
 
 
@@ -748,10 +756,21 @@ class DriveReward:
         # clamp, all the way out to where it reaches zero.
         clamp = self.cfg.cmd_pos_err_clamp_m
         pos_err = pos_err_raw.clamp(-clamp, clamp)
-        pos_tent_max = clamp + self.cfg.pos_err_far_max_m
+        pos_far = (pos_err_raw.abs() - clamp).clamp(0.0, self.cfg.pos_err_far_max_m)
 
-        vel_err = velocity - velocity_cmd
-        yaw_rate_err = yaw_rate - yaw_rate_cmd
+        vel_err = (velocity - velocity_cmd).clamp(-1.0, 1.0)
+        yaw_rate_err = (yaw_rate - yaw_rate_cmd).clamp(-3.0, 3.0)
+        # Every penalty below is bounded on purpose. An unbounded per-step
+        # penalty can exceed what falling costs (-fall_penalty once, plus the
+        # forgone alive/tracking reward), at which point diving for the floor is
+        # the optimal policy. The wrapped yaw error was the live example: at
+        # +-pi it cost 0.5*pi^2 = 4.9/step, roughly double the 2.3/step the robot
+        # gives up by falling, and turn-in-place benchmarks fell 98% of the time.
+        yaw_err_pen = yaw_err.clamp(-self.cfg.yaw_error_pen_clamp_rad, self.cfg.yaw_error_pen_clamp_rad)
+        rate_clamp = self.cfg.attitude_rate_pen_clamp_radps
+        pitch_rate_pen = pitch_rate.clamp(-rate_clamp, rate_clamp)
+        roll_rate_pen = roll_rate.clamp(-rate_clamp, rate_clamp)
+        hold_velocity = velocity.clamp(-0.5, 0.5)
         # "Joystick centred" gate: the station-keeping requirement is only
         # meaningful when no motion was asked for.
         hold = (
@@ -759,79 +778,62 @@ class DriveReward:
             & (yaw_rate_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps)
         ).float()
 
-        # Actuation costs are the only negative terms. Each is capped so their
-        # worst-case sum (0.706) stays below rew_alive, which is what guarantees
-        # per-step reward >= 0 and therefore that ending an episode cannot pay.
-        # No penalty below caps its OUTPUT: a saturated penalty has zero gradient
-        # precisely where pressure matters most, and reads as a harmless constant
-        # in the logs. Bounds go on the input, or into the weight. See the
-        # actuation-cost block in nn_drive_env_cfg.py for what that cost twice.
-        current_pen = self.cfg.rew_current * current.pow(2).sum(dim=1)
-        delta_current_clamped = delta_current.clamp(
-            -self.cfg.delta_current_clamp_a, self.cfg.delta_current_clamp_a
-        )
-        delta_current_pen = self.cfg.rew_delta_current * delta_current_clamped.pow(2).sum(dim=1)
-        # Penalize the mapped physical targets in radians. The mapping has
-        # already respected each joint's asymmetric limits, so an invalid
-        # request hidden behind a clamp cannot distort either reward term.
-        cg_pos_pen = self.cfg.rew_cg_pos * cg_target_angle.pow(2).sum(dim=1)
-        # Bounded by clamping the delta, not the penalty: target_angle is not
-        # slew-limited (applied_target is), so one action reversal can swing all
-        # four joints across their full range. Clamping to what the slew limiter
-        # can actually apply in one step keeps the gradient everywhere it means
-        # anything. See cg_rate_delta_clamp_rad in the cfg for why not the output.
-        cg_delta_clamped = cg_delta_target_angle.clamp(
-            -self.cfg.cg_rate_delta_clamp_rad, self.cfg.cg_rate_delta_clamp_rad
-        )
-        cg_rate_pen = self.cfg.rew_cg_rate * cg_delta_clamped.pow(2).sum(dim=1)
+        # Attitude DEADBAND. The reward reads true pitch/roll while the policy
+        # only ever observes a copy carrying a per-episode IMU mounting bias
+        # (+-3 deg pitch, +-1 deg roll). Penalising anything inside that band
+        # asks the policy to resolve an angle its sensor cannot resolve, and on
+        # hardware you can never do better than your calibration -- so an exact
+        # theta = 0 is a sim-only skill. Outside the band the original quadratic
+        # (plus the linear roll partner) is unchanged, so the fall economics the
+        # clamps above were calibrated against still hold.
+        pitch_excess = (pitch.abs() - math.radians(self.cfg.pitch_flat_deg)).clamp(min=0.0)
+        roll_excess = (roll.abs() - math.radians(self.cfg.roll_flat_deg)).clamp(min=0.0)
 
         components = {
             "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
-            # Drift home: the single largest bonus after alive.
-            "position": tent_bonus(pos_err_raw, pos_tent_max, self.cfg.rew_position),
-            "hold_velocity": hold
-            * tent_bonus(velocity, self.cfg.hold_velocity_tent_max_mps, self.cfg.rew_hold_velocity),
-            "hold_position": hold
-            * tent_bonus(pos_err, self.cfg.hold_position_tent_max_m, self.cfg.rew_hold_position),
-            # Command tracking: exp kernel (broad) + tent (steep at zero).
-            "vel_track": self.cfg.rew_vel_track
-            * torch.exp(-vel_err.clamp(-1.0, 1.0).pow(2) / self.cfg.vel_track_sigma**2),
-            "vel_err": tent_bonus(vel_err, self.cfg.vel_err_tent_max_mps, self.cfg.rew_vel_err),
+            "vel_track": self.cfg.rew_vel_track * torch.exp(-vel_err.pow(2) / self.cfg.vel_track_sigma**2),
             "yaw_rate_track": self.cfg.rew_yaw_rate_track
-            * torch.exp(-yaw_rate_err.clamp(-3.0, 3.0).pow(2) / self.cfg.yaw_rate_track_sigma**2),
-            "yaw_rate_err": tent_bonus(
-                yaw_rate_err, self.cfg.yaw_rate_err_tent_max_radps, self.cfg.rew_yaw_rate_err
-            ),
-            "yaw_error": tent_bonus(yaw_err, self.cfg.yaw_error_tent_max_rad, self.cfg.rew_yaw_error),
-            # Attitude: a band, not a target. Flat inside the IMU mounting-bias
-            # range so the policy is never asked to resolve an angle it cannot
-            # measure, decaying to ~0 by 15 deg where recovery is unlikely anyway.
-            "pitch": flat_top_bonus(
-                pitch, math.radians(self.cfg.pitch_flat_deg), math.radians(self.cfg.pitch_sigma_deg),
-                self.cfg.rew_pitch,
-            ),
-            "roll": flat_top_bonus(
-                roll, math.radians(self.cfg.roll_flat_deg), math.radians(self.cfg.roll_sigma_deg),
-                self.cfg.rew_roll,
-            ),
-            "pitch_rate": tent_bonus(
-                pitch_rate, self.cfg.attitude_rate_tent_max_radps, self.cfg.rew_pitch_rate
-            ),
-            "roll_rate": tent_bonus(
-                roll_rate, self.cfg.attitude_rate_tent_max_radps, self.cfg.rew_roll_rate
-            ),
-            "current": -current_pen,
-            "delta_current": -delta_current_pen,
-            "cg_pos": -cg_pos_pen,
-            "cg_rate": -cg_rate_pen,
+            * torch.exp(-yaw_rate_err.pow(2) / self.cfg.yaw_rate_track_sigma**2),
+            "vel_err": -self.cfg.rew_vel_err * vel_err.pow(2),
+            "yaw_rate_err": -self.cfg.rew_yaw_rate_err * yaw_rate_err.pow(2),
+            "position": -self.cfg.rew_position * pos_err.pow(2),
+            "position_far": -self.cfg.rew_position_far * pos_far,
+            "hold_velocity": -self.cfg.rew_hold_velocity * hold * hold_velocity.pow(2),
+            "hold_position": -self.cfg.rew_hold_position * hold * pos_err.pow(2),
+            "yaw_error": -self.cfg.rew_yaw_error * yaw_err_pen.pow(2),
+            "pitch": -self.cfg.rew_pitch * pitch_excess.pow(2),
+            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate_pen.pow(2),
+            # Quadratic + linear on the band excess. The quadratic alone has
+            # vanishing gradient at the band edge, which would leave a lean just
+            # outside the band nearly free; the linear term keeps a constant
+            # restoring gradient back to it. The robot is symmetric to 0.003 deg
+            # airborne and its nominal COM is +0.29 mm fore/aft and -0.03 mm
+            # lateral of the wheel axis (scripts/measure_nominal_com.py), so an
+            # observed lean is the policy breaking a symmetry, not the plant.
+            "roll": -self.cfg.rew_roll * roll_excess.pow(2) - self.cfg.rew_roll_abs * roll_excess,
+            "roll_rate": -self.cfg.rew_roll_rate * roll_rate_pen.pow(2),
+            "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
+            "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
+            # Penalize the mapped physical targets in radians. The mapping has
+            # already respected each joint's asymmetric limits, so an invalid
+            # request hidden behind a clamp cannot distort either reward term.
+            "cg_pos": -self.cfg.rew_cg_pos * cg_target_angle.pow(2).sum(dim=1),
+            # Bounded by clamping the DELTA (kept from the 2026-08-07 work, a
+            # genuine pre-existing bug): target_angle is not slew-limited --
+            # cg_target_slew_radps limits applied_target one stage later -- so a
+            # single action reversal can swing all four joints across their full
+            # range for a -156/step penalty. It logged as -0.006 and never
+            # surfaced until random-action probing hit -32/step.
+            "cg_rate": -self.cfg.rew_cg_rate
+            * cg_delta_target_angle.clamp(
+                -self.cfg.cg_rate_delta_clamp_rad, self.cfg.cg_rate_delta_clamp_rad
+            ).pow(2).sum(dim=1),
         }
         if terminal_penalty is None:
             terminal_penalty = torch.zeros_like(pitch)
         components["terminal"] = terminal_penalty
         reward = sum(components.values())
-        reward = torch.nan_to_num(
-            reward, nan=0.0, posinf=self.cfg.reward_total_max, neginf=-100.0
-        ).clamp(-100.0, self.cfg.reward_total_max)
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=3.0, neginf=-100.0).clamp(-100.0, 3.0)
         components["total"] = reward
         return reward, components
 

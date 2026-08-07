@@ -118,7 +118,15 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # wheel channels are the runtime proof that contact reporting is actually on
     # (robot_cfg.py activate_contact_sensors). Non-wheel bodies are selected in
     # code via find_bodies, not by excluding wheels in this regex.
-    fall_mode: str = "contact"
+    # NOTE: "contact" is implemented, verified and evidenced as the better fall
+    # definition (relaxing the tilt rule 25 -> 80 deg took stage-1 termination
+    # from 14-20% to 0% with full survival, i.e. every "fall" it reported was a
+    # recovery swing). It is NOT the default, because it is coupled to the
+    # reward: with penalty-based shaping a robot that can sit past 25 deg
+    # indefinitely accrues sustained negative reward, and diving becomes
+    # optimal. Enabling it needs the attitude penalties re-bounded in the same
+    # pass. Revisit as one change, not two.
+    fall_mode: str = "tilt"
     contact_force_threshold_n: float = 1.0
     ground_contact: ContactSensorCfg = ContactSensorCfg(
         prim_path=(
@@ -130,6 +138,10 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     )
 
     # ── Policy interface ─────────────────────────────────────────────────────
+    # Whether the 4 CyberGear joint angles and 4 previous CyberGear actions are
+    # in the observation. False only makes sense with leg_action_mode="fixed",
+    # where both blocks are constants; see NNDriveFixedStanceEnvCfg.
+    include_cg_obs: bool = True
     # Divisors for the 20 observation values; see DriveObservationBuilder.
     drive_observation_scale: tuple = (
         0.5,  # pos_err (m), clamped to +-cmd_pos_err_clamp_m
@@ -219,164 +231,105 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # Every weight below can be zeroed from the CLI (e.g. env.rew_hold_velocity=0.0)
     # to bisect which term is responsible for a behaviour change.
     #
-    # STRUCTURAL INVARIANT (2026-08-07): per-step reward is >= 0 in every reachable
-    # state. Every goal term is a bounded NON-NEGATIVE bonus; only the actuation
-    # costs are penalties, and their worst case sums to 0.706 -- below rew_alive.
-    # With all rewards >= 0 and gamma < 1, a longer episode weakly dominates a
-    # shorter one, so ending the episode early can never pay. That makes "diving
-    # for the floor is never optimal" a property of the reward's shape rather than
-    # of a clamp calibration, which is what previously failed: see
-    # docs/experiments/2026-07-28 (unbounded yaw penalty -> 98% turn-in-place
-    # falls). The old "keep every penalty below the ~2.3/step forfeit" rule and
-    # the clamps justifying themselves against it are gone with the penalties.
+    # RESTORED 2026-08-07 to the tuned pre-session values after the non-negative
+    # refactor was withdrawn. That refactor made every goal term a bounded bonus
+    # so that per-step reward was >= 0 and diving could never pay by
+    # construction. The property held, but it multiplied per-step reward by ~9
+    # (1.3 -> 11.6), Train/mean_reward by ~15x and Loss/value_function by ~80x,
+    # while value_loss_coef and desired_kl stayed where they were tuned for the
+    # old scale. The adaptive-KL schedule then stopped converging: the learning
+    # rate oscillated across its whole 1e-5..1e-2 range on every seed and sat at
+    # the ceiling late in training, so policies got WORSE with more iterations
+    # (seed 43: episode length 1311 at it540 -> 742 at it599; 2/3 seeds passed at
+    # 200 iterations, 1/3 at 600). Under these weights the same runs decayed the
+    # learning rate smoothly, 0.0057 -> 0.0020 -> 0.0006.
     #
-    # PRIORITY ORDER, expressed as weight mass: falling (a hard termination, not a
-    # reward term) >> drift/position > velocity tracking > attitude. This inverts
-    # the previous ordering, where rew_roll=12 and rew_pitch=6 dominated
-    # everything and attitude outweighed every tracking term individually.
-    #
-    # Two shapes are used, both defined in pure_nn_components.py:
-    #   tent_bonus(e, e_max, w)  = w * (1 - |e|/e_max), floored at 0.
-    #       Steepest at e = 0, which is what closes out the last few cm/s -- the
-    #       job the old quadratic partners did, now as a bonus.
-    #   flat_top_bonus(x, flat, sigma, w) = w * exp(-max(0,|x|-flat)^2 / sigma^2).
-    #       Exactly w inside +-flat with ZERO gradient there, decaying outside.
+    # Kept from that work, because each is independently evidenced:
+    #   - the pitch/roll DEADBAND (see rew_pitch below), which was the actual
+    #     insight: theta = 0 is not a well-defined target under a +-3 deg IMU
+    #     mounting bias.
+    #   - vel_track_sigma sharpening (see below).
+    #   - the cg_rate delta clamp, a genuine pre-existing unbounded penalty.
     rew_alive: float = 1.0
-
-    # Drift / position — the largest bonus mass after alive.
-    # Tent spans the observation clamp plus the far range (0.5 + 1.5 = 2.0 m), so
-    # the old separate rew_position_far linear term is subsumed: the tent already
-    # reaches zero at 2.0 m and pulls home the whole way.
-    rew_position: float = 3.0
+    # sigma 0.25 -> 0.08 m/s. The exp kernel is the small-error discriminator and
+    # at 0.25 it could barely tell a stage-1 command from standing still: for a
+    # +0.10 m/s command the gap between perfect tracking and not moving was 3.4%
+    # of per-step reward, so a constant forward bias was cheaper than tracking,
+    # and the fixed-stance baseline drove +0.009 m/s under a -0.10 m/s command.
+    # The tent/quadratic partner stays wide -- it is the only gradient left once
+    # the kernel has decayed (at a stage-5 0.5 m/s error the kernel is exp(-39)).
+    rew_vel_track: float = 0.8
+    vel_track_sigma: float = 0.08  # m/s
+    rew_yaw_rate_track: float = 0.5
+    yaw_rate_track_sigma: float = 0.20  # rad/s
+    # Quadratic partners for the exp kernels above: the kernels are flat at zero
+    # error, these are steepest there, which is what closes out the last few cm/s.
+    rew_vel_err: float = 1.0  # on vel_err clamped to +-1 m/s
+    rew_yaw_rate_err: float = 0.15  # on yaw_rate_err clamped to +-3 rad/s
+    rew_position: float = 3.0  # on clamped pos_err (max 0.75 at the 0.5 m clamp)
+    # Linear penalty on drift beyond the observation clamp, bounded so that
+    # drifting can never become more expensive than falling (max 0.6/step).
+    rew_position_far: float = 0.4
     pos_err_far_max_m: float = 1.5
     # Station keeping: only active while the joystick is centred, so it cannot
-    # fight command tracking.
-    rew_hold_velocity: float = 2.0
-    rew_hold_position: float = 2.0
-    hold_velocity_tent_max_mps: float = 0.5
-    hold_position_tent_max_m: float = 0.5
+    # fight command tracking. 20 cm of creep costs 0.16/step, 0.2 m/s costs 0.16/step.
+    rew_hold_velocity: float = 4.0
+    rew_hold_position: float = 4.0
     hold_velocity_cmd_threshold_mps: float = 0.03
     hold_yaw_rate_cmd_threshold_radps: float = 0.05
-
-    # Command tracking. The exp kernels are kept as-is; the tents replace the
-    # former quadratic penalties and serve the same "steep at zero" purpose.
-    # Raised 0.8/1.0 -> 1.5/2.0 on 2026-08-07. At the original weights tracking
-    # carried 1.8 of weight mass against 7.0 for position+hold, and the first
-    # contact-termination run tracked +0.006 m/s against a +0.10 m/s command
-    # (rms_vel_err 0.115 against a 0.12 limit) while drift improved to 0.14 m.
-    # Position alone cannot substitute: reference anti-windup bounds pos_err by
-    # construction, so the position bonus stays near maximum whether or not the
-    # robot is actually moving, and it exerts little pull on velocity.
-    rew_vel_track: float = 1.5
-    vel_track_sigma: float = 0.25  # m/s
-    rew_yaw_rate_track: float = 0.5
-    yaw_rate_track_sigma: float = 0.6  # rad/s
-    rew_vel_err: float = 2.0
-    vel_err_tent_max_mps: float = 1.0
-    rew_yaw_rate_err: float = 0.15
-    yaw_rate_err_tent_max_radps: float = 3.0
     rew_yaw_error: float = 0.5
-    yaw_error_tent_max_rad: float = 1.0
-
-    # Torso attitude — now the SMALLEST bonus mass, and shaped as a band.
+    # Heading error is wrapped to +-pi, so an unclamped quadratic peaked at
+    # 0.5*pi^2 = 4.9/step — more than the ~2.3/step the robot gives up by
+    # falling, which made diving for the floor the optimal response to a large
+    # heading error. Clamping caps this term at 0.5/step.
+    yaw_error_pen_clamp_rad: float = 1.0
+    # Torso attitude: the 5-bar legs can pitch/roll the platform against the
+    # chassis lean, so a level platform is achievable even while leaning to
+    # balance or climb.
     #
-    # The reward reads TRUE pitch while the policy only ever observes
-    # pitch + _pitch_bias (+-3 deg per episode, ~+-1.5 deg on real hardware). So
-    # "hold theta = 0" asks the policy to zero a quantity it cannot measure, and
-    # on hardware you can never do better than your IMU calibration. A flat top
-    # wider than the bias makes that honest: inside +-3 deg there is no gradient
-    # at all, so the policy is never pushed to resolve an angle its sensor cannot
-    # resolve, and the ~+-1.8 deg trim lean induced by com_offset_y_range_m sits
-    # inside the band for free instead of being fought.
-    #
-    # Sigma is sized so the bonus is nearly gone by ~15 deg, past which recovery
-    # is unlikely anyway: at 15 deg the pitch bonus is exp(-4) = 1.8% of weight.
-    # Between 3 and 15 deg the gradient still pulls upright -- necessary, because
-    # attitude is no longer a termination criterion and nothing else keeps the
-    # robot vertical.
-    rew_pitch: float = 0.5
+    # DEADBAND, added 2026-08-07: the penalty is on max(0, |angle| - flat), so
+    # there is no gradient at all inside the band. The reward reads TRUE pitch
+    # while the policy observes a copy carrying a per-episode mounting bias
+    # (pitch_bias_rad_range +-3 deg, roll_bias_rad_range +-1 deg), so demanding
+    # an exact angle inside that band asks it to resolve what its sensor cannot,
+    # and trains a precision the hardware IMU can never deliver. The bands are
+    # sized to those bias ranges. Outside the band the shaping is unchanged, so
+    # the "every penalty below the fall forfeit" calibration still holds.
+    rew_pitch: float = 6.0
     pitch_flat_deg: float = 3.0
-    pitch_sigma_deg: float = 6.0
-    # Roll gets a much narrower flat top: its mounting bias is only +-1 deg and,
-    # unlike pitch, there is no legitimate reason to lean sideways (no trim, no
-    # acceleration term). The robot is symmetric to 0.003 deg measured airborne.
-    #
-    # Raised 0.5 -> 1.5 with the shoulder tightened 4.0 -> 2.5 deg on 2026-08-07.
-    # At 0.5/4.0 roll degraded an order of magnitude versus the old quadratic
-    # design (0.2-0.36 deg -> 2.5-3.1 deg at benchmark) and drifted upward across
-    # training (0.99 -> 2.18 deg), i.e. the band was wide enough and cheap enough
-    # that parking at an arbitrary lean was nearly free — the same failure the
-    # old rew_roll_abs linear term was added to fix. Roll is weighted above pitch
-    # on purpose: pitch has a legitimate nonzero equilibrium, roll does not.
-    rew_roll: float = 1.5
+    rew_pitch_rate: float = 0.5
+    rew_roll: float = 12.0  # no legitimate reason to lean sideways, unlike pitch
     roll_flat_deg: float = 1.0
-    roll_sigma_deg: float = 2.5
-    # Rate damping, as tents so they stay non-negative. 2 rad/s (115 deg/s) is far
-    # faster than a carrying surface should move, so the bonus is zero beyond it.
-    rew_pitch_rate: float = 0.25
-    rew_roll_rate: float = 0.25
-    attitude_rate_tent_max_radps: float = 2.0
-
-    # ── Actuation costs: the only remaining penalties ────────────────────────
-    # Worst case must stay below rew_alive or the >= 0 invariant breaks.
-    # current 0.08 + delta_current 0.10 + cg_pos 0.494 + cg_rate 0.032 = 0.706.
-    # NEVER cap a penalty's output here. A capped penalty saturates and its
-    # gradient dies exactly where pressure is most needed, which is invisible in
-    # the logs (the term just reads as a constant). Both caps tried on 2026-08-07
-    # failed this way within one run: cg_rate pinned at -0.0977/-0.10 for a whole
-    # run and stopped discouraging flapping; cg_pos then pinned at -0.1966/-0.20,
-    # the legs parked at cg_action_abs 0.67, and the resulting COM shift put the
-    # robot into a 15-24 deg lean and a -0.16 m/s drift. Bound the INPUT to what
-    # is physically meaningful, or lower the weight until the uncapped worst case
-    # fits the budget. Both are done below.
-    rew_current: float = 0.01  # worst case 0.01 * 2 * i_max^2 = 0.08
+    # Linear partner to the quadratic above. A pure quadratic has vanishing
+    # gradient at the band edge, leaving a lean just outside it nearly free; this
+    # keeps a constant restoring gradient back to the band. The robot is
+    # symmetric (all four legs within 0.003 deg airborne, nominal COM +0.29 mm
+    # fore/aft and -0.03 mm lateral of the wheel axis), so an observed lean is
+    # the policy breaking a symmetry nothing forces it to keep.
+    rew_roll_abs: float = 1.0
+    rew_roll_rate: float = 0.5
+    # Same bounding argument as yaw_error: rates spike during a fall, and an
+    # unbounded rate penalty would pay the policy to stop trying to recover.
+    # 2 rad/s (115 deg/s) is already far faster than a carrying surface should
+    # move, so clipping the gradient above it costs nothing and caps each rate
+    # term at 2.0/step — below the ~2.3/step the robot forfeits by falling.
+    attitude_rate_pen_clamp_radps: float = 2.0
+    rew_current: float = 0.01
     rew_delta_current: float = 0.05  # actuation smoothness — matters on hardware
-    # Bounded on the input: the current-loop lag means a step beyond ~1 A per
-    # control step cannot be realized anyway. Worst case 0.05 * 2 * 1.0^2 = 0.10.
-    delta_current_clamp_a: float = 1.0
     # Centring the legs is now cheap: hip fore/aft is the actuator that levels
     # the platform and shifts the contact point under the COM without driving.
-    # Units are per rad^2 of the mapped physical target, not per tanh unit. The
-    # weights retain the physical cost calibrated from the earlier 0.45 rad
-    # controller: 0.02 / 0.45^2 and 0.8 / 0.45^2 respectively.
-    #
-    # cg_pos is UNCAPPED and its weight lowered 0.0988 -> 0.05 instead, so the
-    # restoring gradient stays live at every deflection. At 0.0988 with a 0.20
-    # cap the term saturated once the legs passed ~0.71 rad RMS and stopped
-    # centring them at all — the direct cause of the 2026-08-07 v2 regression.
-    # Uncapped worst case is now 0.05 * 4 * (pi/2)^2 = 0.494, which fits the
-    # budget: 0.08 + 0.10 + 0.494 + 0.032 = 0.706 < rew_alive.
-    rew_cg_pos: float = 0.05
+    # Units are per rad^2 of the mapped physical target, not per tanh unit.
+    rew_cg_pos: float = 0.0988  # 0.02 / 0.45^2
     rew_cg_rate: float = 3.951  # 0.8 / 0.45^2, discourages flapping
-    # cg_rate was UNBOUNDED before 2026-08-07 and the bound is not obvious: it is
-    # computed on target_angle, which is NOT slew-limited (cg_target_slew_radps
-    # limits applied_target, one stage later). So a single-step action reversal
-    # can move all four targets across their full range at once — sum(dtheta^2)
-    # up to ~39 rad^2, i.e. a -156/step penalty, against the ~2.3/step a fall
-    # forfeited under the old economics. A trained policy never jumps that far,
-    # so the logged value sat at -0.006 and it never surfaced; random-action
-    # probing hits -32/step immediately (scripts/verify_contact_and_reward.py).
-    # Same class as the 2026-07-28 wrapped-yaw penalty, found by the >= 0 check.
-    #
-    # Bounded by clamping the DELTA, not the resulting penalty. Capping the
-    # penalty at 0.10 was tried first and saturated at -0.0977 from iteration 0
-    # for a whole run: a saturated penalty has zero gradient, so the term stopped
-    # discouraging flapping entirely and only subtracted a constant. Clamping the
-    # delta instead keeps full gradient across the range that can physically be
-    # applied and flattens only beyond it. 3.0 rad/s * 0.015 s = 0.045 rad is the
-    # most cg_target_slew_radps can move applied_target in one control step, so
-    # requesting more than that is already a no-op at the actuator.
-    # Worst case: 4 * 0.045^2 * 3.951 = 0.032.
+    # cg_rate is computed on target_angle, which is NOT slew-limited
+    # (cg_target_slew_radps limits applied_target one stage later), so one action
+    # reversal can move all four targets across their full range at once:
+    # sum(dtheta^2) up to ~39 rad^2, a -156/step penalty against the ~2.3/step a
+    # fall forfeits. It logged as -0.006 and never surfaced; random-action
+    # probing hits -32/step immediately. 3.0 rad/s * 0.015 s = 0.045 rad is the
+    # most the slew limiter can actually apply in one control step, so requesting
+    # more is already a no-op at the actuator. Worst case 4 * 0.045^2 * 3.951.
     cg_rate_delta_clamp_rad: float = 0.045
-
-    # Upper clamp on the summed reward. MUST exceed the analytic maximum or the
-    # bonuses are silently truncated whenever the robot is doing well — the old
-    # value was 3.0 against a 2.3 maximum, i.e. 0.7 of headroom.
-    # Current maximum: alive 1.0 + position 3.0 + hold 2.0 + 2.0 + vel_track 1.5
-    # + vel_err 2.0 + yaw_rate_track 0.5 + yaw_rate_err 0.15 + yaw_error 0.5
-    # + pitch 0.5 + roll 1.5 + pitch_rate 0.25 + roll_rate 0.25 = 15.15.
-    # verify_contact_and_reward.py asserts the observed maximum stays below this.
-    reward_total_max: float = 20.0
 
     # ── Reset state ──────────────────────────────────────────────────────────
     reset_pitch_range_deg: float = 12.0
@@ -418,10 +371,13 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # d = 0.29, and fall rate rose monotonically 13% -> 79% across its range.
     # The arithmetic: Platform_Group is 59.7% of the robot's 3.80 kg, so a
     # platform COM shift d moves the whole-robot COM by 0.597*d, and the measured
-    # trim sensitivity is ~0.6 deg of permanent lean per mm of whole-robot offset
-    # (effective pendulum height ~93 mm, backed out from observed trim). So
-    # +-30 mm demanded +-11 deg of permanent lean against a 25 deg fall threshold.
-    # +-5 mm -> +-3.0 mm whole-robot -> ~+-1.8 deg, which sits just below the
+    # trim sensitivity is 0.758 deg of permanent lean per mm of whole-robot
+    # offset. That comes from the COM height above the wheel axis, measured
+    # directly at 75.63 mm by scripts/measure_nominal_com.py -- an earlier
+    # estimate of ~93 mm backed out from observed trim was 25% high, so figures
+    # derived from it understated every trim demand. So +-30 mm demanded +-13.3
+    # deg of permanent lean against a 25 deg fall threshold.
+    # +-5 mm -> +-3.0 mm whole-robot -> +-2.3 deg, which sits just below the
     # +-3 deg IMU mounting bias -- the right ordering, since that bias is
     # deliberately exaggerated (see pitch_bias_rad_range).
     #
@@ -471,7 +427,51 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
 
 @configclass
 class NNDriveFixedStanceEnvCfg(NNDriveEnvCfg):
-    """Diagnostic NNDrive variant with fixed legs and wheel-only actions."""
+    """NNDrive with the legs pinned: a two-wheeled inverted pendulum.
+
+    Originally a diagnostic arm; now the task the actuator domain-randomization
+    study runs on. Fixing the CyberGears isolates the DDSM115 wheel actuator
+    model, which is the part with a bench-measurement campaign behind it
+    (EMB-18), and removes four of six actions plus eight dead observations, which
+    is what makes multi-seed ablations affordable.
+
+    This is a strict subset of the six-action task, not a different controller:
+    map_cybergear_tanh_to_joint_target maps 0 -> 0 for every joint, so fixed
+    stance is exactly the four-leg policy with actions[0:4] pinned to zero.
+    """
 
     action_space: int = 2
     leg_action_mode: str = "fixed"
+
+    # 20 -> 12. The 4 CyberGear joint angles and 4 previous CyberGear actions are
+    # constants once the legs are pinned. Indices 0-7 keep their meaning.
+    observation_space: int = 12
+    include_cg_obs: bool = False
+    drive_observation_scale: tuple = (
+        0.5,  # pos_err (m), clamped to +-cmd_pos_err_clamp_m
+        1.0,  # velocity (m/s)
+        math.radians(25.0),  # pitch (rad)
+        4.0,  # pitch_rate (rad/s)
+        1.5,  # yaw_err (rad)
+        4.0,  # yaw_rate (rad/s)
+        1.0,  # velocity_cmd (m/s)
+        2.0,  # yaw_rate_cmd (rad/s)
+        2.0,
+        2.0,  # previous wheel current (A)
+        math.radians(25.0),  # roll (rad)
+        4.0,  # roll_rate (rad/s)
+    )
+
+    # Build tolerance only, and deliberately smaller than the six-action task's
+    # +-5 mm. Two reasons. (1) The trim-learning objective this range was
+    # originally sized for is already carried by pitch_bias_rad_range: a +-3 deg
+    # IMU mounting bias and a COM offset are indistinguishable to the policy —
+    # both move the balance point away from measured-zero pitch and both must be
+    # resolved through pos_err — and that bias is deliberately exaggerated for
+    # exactly this purpose. (2) COM is a body property, not an actuator one, so
+    # for the actuator ablation it is a nuisance variable that must not dominate.
+    # At +-30 mm it did dominate, burying every actuator parameter (Cohen's
+    # d = 0.999 against <=0.29 for all others), which is the failure mode to
+    # avoid here. +-1 mm is 0.6 mm whole-robot, ~0.45 deg of trim, negligible
+    # beside the +-3 deg sensor bias. ASSUMED, not IDENTIFIED, for section 2.4.
+    com_offset_y_range_m: tuple = (-0.001, 0.001)
