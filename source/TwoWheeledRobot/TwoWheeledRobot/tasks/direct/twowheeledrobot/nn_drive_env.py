@@ -9,7 +9,7 @@ Extends PureNNBalanceEnv with:
     gyro biases, CyberGear gain randomization, and continuous force noise on top
     of the inherited motor/wheel/IMU randomization and push/payload disturbances.
 
-Observation (18) and action (6) layouts are documented in
+Observation (20) and action (6) layouts are documented in
 pure_nn_components.py::DriveObservationBuilder and STM32_DEPLOYMENT.md.
 """
 
@@ -24,7 +24,7 @@ import torch
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation
-from isaaclab.sensors import Imu
+from isaaclab.sensors import ContactSensor, Imu
 from isaaclab.terrains import TerrainImporterCfg
 
 from .nn_drive_env_cfg import NNDriveEnvCfg
@@ -51,7 +51,23 @@ from .sim_params import (
 class NNDriveEnv(PureNNBalanceEnv):
     cfg: NNDriveEnvCfg
 
+    # Class-level defaults so the inherited termination path can read these
+    # safely at any point during construction, before _setup_scene has run.
+    ground_contact = None
+    _contact_wheel_cols = None
+    _contact_nonwheel_cols = None
+
     def __init__(self, cfg: NNDriveEnvCfg, render_mode: str | None = None, **kwargs):
+        expected_actions = {"policy": 6, "fixed": 2}
+        if cfg.leg_action_mode not in expected_actions:
+            raise ValueError(f"Unsupported leg_action_mode: {cfg.leg_action_mode}")
+        if cfg.action_space != expected_actions[cfg.leg_action_mode]:
+            raise ValueError(
+                f"leg_action_mode={cfg.leg_action_mode!r} requires action_space="
+                f"{expected_actions[cfg.leg_action_mode]}, got {cfg.action_space}"
+            )
+        if len(cfg.fixed_leg_stance_rad) != 4:
+            raise ValueError("fixed_leg_stance_rad must contain fl, fr, bl, br targets")
         # The inherited NormalizedObservationBuilder validates observation_scale
         # against observation_space; alias it to the drive scale (it is unused
         # by this env — DriveObservationBuilder replaces it).
@@ -81,13 +97,42 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._default_body_inertias = self.robot.root_physx_view.get_inertias().clone()
         self._default_body_coms = self.robot.root_physx_view.get_coms().clone()
         self._platform_body_col = int(self._body_ids[0].item()) if self._body_ids is not None else 0
+        self._resolve_contact_bodies()
 
         print(
             "[NNDriveEnv] joystick drive controller active, "
             f"dt={self.step_dt:.3f}s, obs={cfg.observation_space}, act={cfg.action_space}, "
             f"terrain={cfg.terrain_mode}, curriculum_stage={cfg.curriculum_stage}, "
+            f"leg_actions={cfg.leg_action_mode}, "
             f"v_max={self._commands._stage_limits(cfg.curriculum_stage)[0]:.2f} m/s, "
             f"w_max={self._commands._stage_limits(cfg.curriculum_stage)[1]:.2f} rad/s"
+        )
+
+    def _resolve_contact_bodies(self) -> None:
+        """Split the contact sensor's bodies into wheels and everything else.
+
+        ``net_forces_w`` is indexed by the *sensor's* body ordering, which is not
+        the articulation's, so the split is done against ``sensor.body_names``.
+        Failing loudly here is deliberate: a silently empty non-wheel set would
+        mean nothing ever terminates and every training curve would look great.
+        """
+        if self.ground_contact is None:
+            return
+        names = list(self.ground_contact.body_names)
+        wheel_cols = [i for i, name in enumerate(names) if "DDSM115" in name]
+        nonwheel_cols = [i for i, name in enumerate(names) if "DDSM115" not in name]
+        if len(wheel_cols) != 2 or not nonwheel_cols:
+            raise RuntimeError(
+                "Contact sensor body split failed: expected exactly 2 DDSM115 wheel bodies "
+                f"and at least one non-wheel body, got wheels={len(wheel_cols)}, "
+                f"non-wheels={len(nonwheel_cols)}, bodies={names}"
+            )
+        self._contact_wheel_cols = torch.tensor(wheel_cols, device=self.device, dtype=torch.long)
+        self._contact_nonwheel_cols = torch.tensor(nonwheel_cols, device=self.device, dtype=torch.long)
+        print(
+            f"[NNDriveEnv] fall_mode=contact, threshold={self.cfg.contact_force_threshold_n:.2f} N, "
+            f"wheels={[names[i] for i in wheel_cols]}, "
+            f"non-wheel bodies ({len(nonwheel_cols)})={[names[i] for i in nonwheel_cols]}"
         )
 
     # ── Scene: terrain instead of flat ground plane ──────────────────────────
@@ -97,6 +142,18 @@ class NNDriveEnv(PureNNBalanceEnv):
         self.scene.articulations["robot"] = self.robot
         self.bno080 = Imu(self.cfg.bno080)
         self.scene.sensors["bno080"] = self.bno080
+
+        # Contact-based falling. The sensor spans every body; the non-wheel subset
+        # is selected after construction (see _resolve_contact_bodies), so the
+        # wheel channels stay available as the "is contact reporting actually on?"
+        # check. NOTE: this is inert unless robot_cfg has
+        # activate_contact_sensors=True -- it reports zeros rather than failing.
+        self.ground_contact = None
+        if self.cfg.fall_mode == "contact":
+            self.ground_contact = ContactSensor(self.cfg.ground_contact)
+            self.scene.sensors["ground_contact"] = self.ground_contact
+        elif self.cfg.fall_mode != "tilt":
+            raise ValueError(f"Unsupported fall_mode: {self.cfg.fall_mode!r} (expected 'tilt' or 'contact')")
 
         ground_static = GROUND_STATIC_FRICTION
         ground_dynamic = GROUND_DYNAMIC_FRICTION
@@ -165,7 +222,7 @@ class NNDriveEnv(PureNNBalanceEnv):
         yaw_rate = self.robot.data.root_ang_vel_w[:, 2]
         return x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate
 
-    # ── Actions: 4 CyberGear stance targets + 2 wheel currents ───────────────
+    # ── Actions: policy legs + wheels, or fixed legs + wheels for the A/B ────
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._enforce_cybergear_joint_state_limits()
@@ -177,17 +234,20 @@ class NNDriveEnv(PureNNBalanceEnv):
         raw_wheel_pos = self.robot.data.joint_pos[:, self._wheel_ids] * self._wheel_sign
         x_odom_now = 0.5 * raw_wheel_pos.sum(dim=1) * R_WHEEL
         yaw_now = yaw_from_quat_wxyz(self.robot.data.root_quat_w)
-        self._commands.step(
-            self.episode_length_buf, self.cfg.curriculum_stage, self.step_dt, x_odom_now, yaw_now
-        )
+        self._commands.step(self.episode_length_buf, self.cfg.curriculum_stage, self.step_dt, x_odom_now, yaw_now)
 
-        cg_targets = self._cg_processor.process(
-            actions[:, 0:4], self._cg_joint_lo, self._cg_joint_hi, self.step_dt
-        )
+        if self.cfg.leg_action_mode == "fixed":
+            cg_targets = self._cg_processor.process_fixed(
+                self.cfg.fixed_leg_stance_rad, self._cg_joint_lo, self._cg_joint_hi, self.step_dt
+            )
+            wheel_actions = actions[:, 0:2]
+        else:
+            cg_targets = self._cg_processor.process(actions[:, 0:4], self._cg_joint_lo, self._cg_joint_hi, self.step_dt)
+            wheel_actions = actions[:, 4:6]
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
         # Wheel current path — identical motor model to PureNNBalanceEnv.
-        self._wheel_i_cmd = self._action_processor.process(actions[:, 4:6], self.step_dt)
+        self._wheel_i_cmd = self._action_processor.process(wheel_actions, self.step_dt)
         self._wheel_i_des = self._action_processor.net_current.clone()
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
@@ -235,9 +295,7 @@ class NNDriveEnv(PureNNBalanceEnv):
 
         # Sensor models: mounting bias, gyro biases, odometry scale, noise.
         pitch_m = pitch + self._pitch_bias + torch.randn_like(pitch) * self.cfg.pitch_noise_std
-        pitch_rate_m = (
-            pitch_rate + self._pitch_rate_bias + torch.randn_like(pitch_rate) * self.cfg.pitch_rate_noise_std
-        )
+        pitch_rate_m = pitch_rate + self._pitch_rate_bias + torch.randn_like(pitch_rate) * self.cfg.pitch_rate_noise_std
         # Roll comes off the same BNO080 as pitch, so it carries a mounting bias
         # and gyro bias of the same magnitude — sampled separately because the
         # two axes of one mount are independent errors, not a shared one.
@@ -249,7 +307,7 @@ class NNDriveEnv(PureNNBalanceEnv):
 
         cg_pos = self.robot.data.joint_pos[:, self._cg_ids]
         cg_pos = cg_pos + torch.randn_like(cg_pos) * self.cfg.noise_cg_pos_std
-        cg_pos_norm = cg_pos / self.cfg.cg_action_authority_rad
+        cg_pos_norm = cg_pos / self.cfg.cg_position_scale_rad
 
         self._obs_now = self._drive_obs_builder.build(
             pos_err_m,
@@ -277,8 +335,8 @@ class NNDriveEnv(PureNNBalanceEnv):
         roll = roll_from_projected_gravity(self.bno080.data.projected_gravity_b)
         roll_rate = self.bno080.data.ang_vel_b[:, 1]
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
-        # Reward sees the unclamped drift (DriveReward clamps internally for the
-        # quadratic term); the observation stays clamped for firmware parity.
+        # Reward sees the unclamped drift so the position bonus keeps pulling home
+        # past the clamp; the observation stays clamped for firmware parity.
         pos_err_raw = self._commands.position_error_raw(x_rel)
         pos_err = pos_err_raw.clamp(-self.cfg.cmd_pos_err_clamp_m, self.cfg.cmd_pos_err_clamp_m)
         reward, components = self._drive_reward.compute(
@@ -294,10 +352,14 @@ class NNDriveEnv(PureNNBalanceEnv):
             self._commands.w_cmd,
             self._action_processor.command_current,
             self._action_processor.delta_current(),
-            self._cg_processor.tanh_action,
-            self._cg_processor.delta_tanh(),
+            self._cg_processor.target_angle,
+            self._cg_processor.delta_target_angle(),
             self._last_terminal_penalty,
         )
+        # Per-env components kept for scripts/verify_contact_and_reward.py, which
+        # asserts the per-step reward stays non-negative. extras["log"] only keeps
+        # means, and a mean cannot show a single env going negative.
+        self._last_reward_components = components
         hold_mask = (self._commands.v_cmd.abs() < self.cfg.hold_velocity_cmd_threshold_mps) & (
             self._commands.w_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps
         )

@@ -22,6 +22,10 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     episode_length_s: float = 8.0
     floor_initial_pitch_deg: float = 3.0
     floor_stop_pitch_deg: float = 25.0
+    # "tilt" is the historical rule and stays the default for every task that is
+    # not NNDrive. NNDriveEnvCfg overrides it to "contact"; see the comment there.
+    fall_mode: str = "tilt"
+    contact_force_threshold_n: float = 1.0
     fall_pitch_threshold_deg: float = 25.0
     fall_total_tilt_threshold_deg: float = 25.0
     fall_consecutive_steps: int = 5

@@ -51,6 +51,10 @@ class NNDriveDemoEnvCfg(NNDriveEnvCfg):
     # out of frame. Raise the bar so the clip shows the real recovery; the
     # recording script reports the measured pitch trace so "it survived" stays
     # a measurement, not an assumption.
+    # Pinned back to the tilt rule: NNDriveEnvCfg switched to fall_mode="contact"
+    # on 2026-08-07, which would end the hero shot the moment a leg brushed the
+    # landing floor during the drop recovery. The showcase wants the clip to run.
+    fall_mode: str = "tilt"
     fall_pitch_threshold_deg: float = 80.0
     fall_total_tilt_threshold_deg: float = 80.0
 

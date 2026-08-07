@@ -15,9 +15,13 @@ Avoid changing here without also checking:
 """
 
 import os
-from isaaclab.assets import ArticulationCfg
-from isaaclab.actuators import ImplicitActuatorCfg
+
+from pxr import Usd, UsdPhysics
+
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg
+from isaaclab.sim.utils import clone
 
 from .sim_params import (
     ANGULAR_DAMPING,
@@ -40,10 +44,62 @@ _USD_PATH = os.path.normpath(os.path.join(
     "docs", "ColectedUSD_v2", "World0.usd"
 ))
 
+_CYBERGEAR_LIMITS_DEG = {
+    "front_left": (-10.0, 90.0),
+    "front_right": (-90.0, 10.0),
+    "back_left": (-90.0, 10.0),
+    "back_right": (-10.0, 90.0),
+}
+
+
+@clone
+def _spawn_robot_with_joint_limits(
+    prim_path: str,
+    cfg: sim_utils.UsdFileCfg,
+    translation: tuple[float, float, float] | None = None,
+    orientation: tuple[float, float, float, float] | None = None,
+    **kwargs,
+) -> Usd.Prim:
+    """Spawn the robot with its four hardware hard stops authored pre-PhysX."""
+    # Call the undecorated stock spawner so this wrapper authors the source
+    # prim before its own @clone invocation copies it to the other envs.
+    prim = sim_utils.spawn_from_usd.__wrapped__(
+        prim_path,
+        cfg,
+        translation=translation,
+        orientation=orientation,
+        **kwargs,
+    )
+
+    authored: set[str] = set()
+    for child in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
+        joint_name = child.GetName()
+        limits = _CYBERGEAR_LIMITS_DEG.get(joint_name)
+        if limits is None or not child.IsA(UsdPhysics.RevoluteJoint):
+            continue
+        joint = UsdPhysics.RevoluteJoint(child)
+        joint.CreateLowerLimitAttr(limits[0])
+        joint.CreateUpperLimitAttr(limits[1])
+        authored.add(joint_name)
+
+    missing = set(_CYBERGEAR_LIMITS_DEG) - authored
+    if missing:
+        raise RuntimeError(
+            "Could not author CyberGear hard stops before PhysX initialization; "
+            f"missing revolute joint prims: {sorted(missing)}"
+        )
+    return prim
+
 TWO_WHEELED_ROBOT_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
+        func=_spawn_robot_with_joint_limits,
         usd_path=_USD_PATH,
-        activate_contact_sensors=False,
+        # Required by NNDrive's contact-based fall termination (2026-08-07). With
+        # this False a ContactSensor still constructs and still reports — it just
+        # reports zeros forever, so every episode looks contact-free and nothing
+        # ever terminates. Verify non-zero force on the WHEELS before trusting any
+        # contact-derived number; see scripts/verify_contact_and_reward.py.
+        activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,

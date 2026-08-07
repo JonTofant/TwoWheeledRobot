@@ -58,6 +58,14 @@ class PureNNBalanceEnv(StandupEnv):
         self._last_physics_broken = torch.zeros_like(self._last_fall)
         self._last_invalid_state = torch.zeros_like(self._last_fall)
         self._last_timeout = torch.zeros_like(self._last_fall)
+        # Snapshots returned by the most recent _get_dones call. DirectRLEnv
+        # resets completed environments inside env.step(), which clears the
+        # regular _last_* buffers before an external benchmark can inspect the
+        # cause. These snapshots intentionally survive that reset.
+        self._last_step_fall = torch.zeros_like(self._last_fall)
+        self._last_step_physics_broken = torch.zeros_like(self._last_fall)
+        self._last_step_invalid_state = torch.zeros_like(self._last_fall)
+        self._last_step_timeout = torch.zeros_like(self._last_fall)
         self._last_terminal_penalty = torch.zeros(self.num_envs, device=self.device)
         self._last_total_tilt = torch.zeros(self.num_envs, device=self.device)
         self._termination_update_step = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
@@ -179,12 +187,38 @@ class PureNNBalanceEnv(StandupEnv):
         body_z_safe = torch.nan_to_num(body_z, nan=-999.0)
         physics_broken = body_z_safe < self._physics_broken_z
 
+        # total_tilt is logged regardless of fall_mode (_last_total_tilt).
         projected_gravity = self.bno080.data.projected_gravity_b
         total_tilt = torch.acos(torch.clamp(-projected_gravity[:, 2], -1.0, 1.0))
-        over_pitch = pitch.abs() > math.radians(self.cfg.fall_pitch_threshold_deg)
-        over_total_tilt = total_tilt > math.radians(self.cfg.fall_total_tilt_threshold_deg)
-        over_fall_tilt = over_pitch | over_total_tilt
-        updated_counter = torch.where(over_fall_tilt, self._fall_counter + 1, torch.zeros_like(self._fall_counter))
+
+        if getattr(self.cfg, "fall_mode", "tilt") == "contact":
+            # Falling means touching the floor with something that is not a wheel.
+            # Attitude is deliberately NOT a termination criterion here: a leaning
+            # robot is not a fallen robot, and with a +-3 deg IMU mounting bias
+            # there is no attitude the policy can be held to. Verified 2026-08-07:
+            # relaxing the old 25 deg rule to 80 deg took stage-1 termination from
+            # 14-20% to 0% with full-window survival, so every "fall" it was
+            # reporting was a recovery swing, not a fall.
+            contact_cols = self._contact_nonwheel_cols
+            if self.ground_contact is None or contact_cols is None:
+                raise RuntimeError(
+                    "fall_mode='contact' but no contact sensor is available. "
+                    "Check that _setup_scene constructed it and that robot_cfg has "
+                    "activate_contact_sensors=True."
+                )
+            contact_forces = self.ground_contact.data.net_forces_w[:, contact_cols, :]
+            contact_mag = torch.linalg.vector_norm(contact_forces, dim=-1).max(dim=1).values
+            over_fall_condition = contact_mag > self.cfg.contact_force_threshold_n
+        else:
+            over_pitch = pitch.abs() > math.radians(self.cfg.fall_pitch_threshold_deg)
+            over_total_tilt = total_tilt > math.radians(self.cfg.fall_total_tilt_threshold_deg)
+            over_fall_condition = over_pitch | over_total_tilt
+
+        # Debounce is shared by both modes: fall_consecutive_steps compliant-free
+        # steps are required, so a single-frame contact spike is not fatal.
+        updated_counter = torch.where(
+            over_fall_condition, self._fall_counter + 1, torch.zeros_like(self._fall_counter)
+        )
         self._fall_counter = torch.where(needs_update, updated_counter, self._fall_counter)
         fall = self._fall_counter >= self.cfg.fall_consecutive_steps
         timeout = self.episode_length_buf >= self.max_episode_length - 1
@@ -346,6 +380,10 @@ class PureNNBalanceEnv(StandupEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         _, velocity, pitch, pitch_rate, yaw_error, yaw_rate = self._state_terms()
         self._update_termination_flags(pitch, pitch_rate, velocity, yaw_error, yaw_rate)
+        self._last_step_fall = self._last_fall.clone()
+        self._last_step_physics_broken = self._last_physics_broken.clone()
+        self._last_step_invalid_state = self._last_invalid_state.clone()
+        self._last_step_timeout = self._last_timeout.clone()
         terminated = self._last_fall | self._last_physics_broken | self._last_invalid_state
         timeout = self._last_timeout
         return terminated, timeout

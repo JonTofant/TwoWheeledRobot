@@ -24,6 +24,44 @@ def wrap_angle_rad(value: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(value), torch.cos(value))
 
 
+def tent_bonus(error: torch.Tensor, max_error: float, weight: float) -> torch.Tensor:
+    """Bounded non-negative bonus, maximal and steepest at zero error.
+
+    ``weight`` at ``error == 0``, falling linearly to 0 at ``|error| == max_error``
+    and staying there. This is the non-negative replacement for the old ``-w*e^2``
+    penalties: it keeps the constant restoring gradient that closes out the last
+    few cm/s (a pure exp kernel is flat at zero and cannot), while never going
+    negative, which is what makes ending an episode early unable to pay.
+    """
+    return weight * (1.0 - error.abs() / max_error).clamp(min=0.0)
+
+
+def flat_top_bonus(value: torch.Tensor, flat: float, sigma: float, weight: float) -> torch.Tensor:
+    """Full ``weight`` inside ``+-flat`` with zero gradient there, decaying outside.
+
+    Used for attitude. The flat region is deliberately sized to the sensor's
+    mounting-bias range: the reward is computed on true pitch/roll but the policy
+    only observes a biased copy, so demanding a specific angle inside the bias
+    band would be asking it to resolve something it cannot measure. Outside the
+    band the Gaussian shoulder still pulls upright.
+    """
+    excess = (value.abs() - flat).clamp(min=0.0)
+    return weight * torch.exp(-excess.pow(2) / (sigma**2))
+
+
+def map_cybergear_tanh_to_joint_target(
+    tanh_action: torch.Tensor, joint_lo: torch.Tensor, joint_hi: torch.Tensor
+) -> torch.Tensor:
+    """Map each zero-centred action onto its complete asymmetric joint range.
+
+    For every joint, ``-1 -> joint_lo``, ``0 -> 0`` and ``+1 -> joint_hi``.
+    The two halves are scaled independently so the policy never requests an
+    angle outside the confirmed mechanical range and no action interval is
+    discarded by a subsequent clamp.
+    """
+    return torch.where(tanh_action >= 0.0, tanh_action * joint_hi, (-tanh_action) * joint_lo)
+
+
 class NormalizedObservationBuilder:
     """Build the compact 8-value balance observation with fixed normalization."""
 
@@ -130,8 +168,30 @@ class CurriculumSampler:
         return int(self.cfg.curriculum_stage)
 
     def reset_ranges(self) -> tuple[float, float, float]:
+        """Spawn attitude/velocity ranges for the current curriculum stage.
+
+        The pitch range ramps with the stage; pitch rate and velocity do not.
+        Measured 2026-08-07 on the stage-1 policy: spawn |pitch| is the single
+        dominant predictor of an early fall (Cohen's d = 2.31, AUC = 0.956, with
+        every other randomized parameter below d = 0.38), and the dose-response
+        is a cliff rather than a slope — 0.0% fall rate below 7.6 deg across 640
+        environments, 13.3% by 10.6 deg, 53.9% above 10.7 deg. The recoverable
+        envelope is ~9 deg, so a flat 12 deg spawned a quarter of stage 1 outside
+        what the policy could ever save. Everything else in this task already
+        ramps by stage (command velocity, yaw rate, disturbance kind); this did
+        not, and arrived at full magnitude on iteration 1 of stage 1.
+
+        Expressed as a SCALE on reset_pitch_range_deg rather than per-stage
+        absolutes so configs that deliberately set a small spawn keep it — the
+        demo scene runs at curriculum_stage 5 with reset_pitch_range_deg = 2.0
+        and must stay there.
+        """
+        scales = getattr(self.cfg, "reset_stage_pitch_scale", None)
+        pitch_deg = self.cfg.reset_pitch_range_deg
+        if scales:
+            pitch_deg = pitch_deg * scales[max(0, min(self.stage, len(scales)) - 1)]
         return (
-            math.radians(self.cfg.reset_pitch_range_deg),
+            math.radians(pitch_deg),
             self.cfg.reset_pitch_rate_range_radps,
             self.cfg.reset_velocity_range_mps,
         )
@@ -220,10 +280,14 @@ class DisturbanceGenerator:
                 self.kind[env_ids[slope_mask]] = DIST_SLOPE
         elif stage >= 4:
             # 40% none, 40% payload/COM shift, 20% payload+human push.
-            self.kind[env_ids] = torch.where(u < 0.40, DIST_NONE, torch.where(u < 0.80, DIST_PAYLOAD, DIST_PAYLOAD_PUSH))
+            self.kind[env_ids] = torch.where(
+                u < 0.40, DIST_NONE, torch.where(u < 0.80, DIST_PAYLOAD, DIST_PAYLOAD_PUSH)
+            )
         elif stage >= 3:
             # 50% none, 40% single human push, 10% double human push.
-            self.kind[env_ids] = torch.where(u < 0.50, DIST_NONE, torch.where(u < 0.90, DIST_HUMAN_PUSH, DIST_DOUBLE_HUMAN_PUSH))
+            self.kind[env_ids] = torch.where(
+                u < 0.50, DIST_NONE, torch.where(u < 0.90, DIST_HUMAN_PUSH, DIST_DOUBLE_HUMAN_PUSH)
+            )
 
         push_env_ids = env_ids[(self.kind[env_ids] == DIST_HUMAN_PUSH) | (self.kind[env_ids] == DIST_PAYLOAD_PUSH)]
         double_push_env_ids = env_ids[self.kind[env_ids] == DIST_DOUBLE_HUMAN_PUSH]
@@ -497,7 +561,7 @@ class DriveObservationBuilder:
         [5]  yaw_rate         rad/s
         [6]  velocity_cmd     m/s
         [7]  yaw_rate_cmd     rad/s
-        [8-11]  cg_pos_norm   CyberGear extension fraction in [-1, 1] (fl, fr, bl, br)
+        [8-11]  cg_pos_norm   CyberGear joint angle / 90 deg (fl, fr, bl, br)
         [12-13] prev wheel current A (left, right)
         [14-17] prev cg action, tanh-squashed in [-1, 1] (fl, fr, bl, br)
         [18] roll             rad
@@ -552,7 +616,9 @@ class CyberGearStanceProcessor:
     """Convert raw CyberGear actions into slew-limited joint position targets.
 
     Deployment contract (must match the STM32 firmware):
-        target = clamp(nominal + tanh(a) * authority, joint_lo, joint_hi)
+        t = tanh(a)
+        target = t * joint_hi if t >= 0 else (-t) * joint_lo
+        target = clamp(target + calibration_bias, joint_lo, joint_hi)
         target = slew_limit(target, cg_target_slew_radps)
 
     A per-episode calibration bias models real CyberGear zero-offset error.
@@ -563,6 +629,8 @@ class CyberGearStanceProcessor:
         self.device = device
         self.tanh_action = torch.zeros(num_envs, 4, device=device)
         self.prev_tanh_action = torch.zeros(num_envs, 4, device=device)
+        self.target_angle = torch.zeros(num_envs, 4, device=device)
+        self.prev_target_angle = torch.zeros(num_envs, 4, device=device)
         self.applied_target = torch.zeros(num_envs, 4, device=device)
         self.calib_bias = torch.zeros(num_envs, 4, device=device)
 
@@ -570,6 +638,8 @@ class CyberGearStanceProcessor:
         n = len(env_ids)
         self.tanh_action[env_ids] = 0.0
         self.prev_tanh_action[env_ids] = 0.0
+        self.target_angle[env_ids] = 0.0
+        self.prev_target_angle[env_ids] = 0.0
         self.applied_target[env_ids] = 0.0
         lo, hi = self.cfg.cg_calib_bias_rad_range
         self.calib_bias[env_ids] = torch.empty(n, 4, device=self.device).uniform_(lo, hi)
@@ -582,32 +652,74 @@ class CyberGearStanceProcessor:
         dt: float,
     ) -> torch.Tensor:
         self.prev_tanh_action = self.tanh_action.clone()
+        self.prev_target_angle = self.target_angle.clone()
         self.tanh_action = torch.tanh(raw_cg_actions)
-        desired = (self.tanh_action * self.cfg.cg_action_authority_rad + self.calib_bias).clamp(
-            min=joint_lo, max=joint_hi
-        )
+        self.target_angle = map_cybergear_tanh_to_joint_target(self.tanh_action, joint_lo, joint_hi)
+        desired = (self.target_angle + self.calib_bias).clamp(min=joint_lo, max=joint_hi)
         max_step = self.cfg.cg_target_slew_radps * dt
         delta = (desired - self.applied_target).clamp(-max_step, max_step)
         self.applied_target = self.applied_target + delta
         return self.applied_target
 
-    def delta_tanh(self) -> torch.Tensor:
-        return self.tanh_action - self.prev_tanh_action
+    def process_fixed(
+        self,
+        fixed_target_rad: tuple[float, float, float, float],
+        joint_lo: torch.Tensor,
+        joint_hi: torch.Tensor,
+        dt: float,
+    ) -> torch.Tensor:
+        """Hold a physical leg stance through the same bias and slew path."""
+        self.prev_tanh_action = self.tanh_action.clone()
+        self.prev_target_angle = self.target_angle.clone()
+        target = torch.as_tensor(fixed_target_rad, device=self.device, dtype=joint_lo.dtype).view(1, 4)
+        self.target_angle = target.expand_as(joint_lo).clamp(min=joint_lo, max=joint_hi)
+        # Preserve the observation meaning of "previous CG tanh action" even
+        # though the diagnostic policy does not emit these four values.
+        positive_scale = joint_hi.clamp_min(torch.finfo(joint_hi.dtype).eps)
+        negative_scale = (-joint_lo).clamp_min(torch.finfo(joint_lo.dtype).eps)
+        self.tanh_action = torch.where(
+            self.target_angle >= 0.0,
+            self.target_angle / positive_scale,
+            self.target_angle / negative_scale,
+        ).clamp(-1.0, 1.0)
+        desired = (self.target_angle + self.calib_bias).clamp(min=joint_lo, max=joint_hi)
+        max_step = self.cfg.cg_target_slew_radps * dt
+        delta = (desired - self.applied_target).clamp(-max_step, max_step)
+        self.applied_target = self.applied_target + delta
+        return self.applied_target
+
+    def delta_target_angle(self) -> torch.Tensor:
+        return self.target_angle - self.prev_target_angle
 
 
 class DriveReward:
     """Command-tracking reward for the NN drive task.
 
-    Positive tracking terms (exp kernels) reward following the joystick;
-    quadratic penalties keep pitch, position drift, and actuation smooth.
-    Pitch is deliberately weighted lower than in the balance task because the
-    equilibrium pitch is nonzero on inclines and while accelerating.
+    Rewritten 2026-08-07 so that **every per-step reward is >= 0**. All goal terms
+    are bounded non-negative bonuses; only actuation costs subtract, and their
+    worst case (0.706) is below ``rew_alive``. With all rewards >= 0 and gamma < 1,
+    a longer episode weakly dominates a shorter one, so diving for the floor
+    cannot pay — by the shape of the reward, not by a clamp calibration. The
+    previous design bounded each penalty against the ~2.3/step a fall forfeits;
+    that argument had already failed once (docs/experiments/2026-07-28: an
+    unbounded wrapped-yaw penalty reached 4.9/step and turn-in-place fell 98% of
+    the time) and had to be re-derived every time a weight moved.
 
-    An exp kernel is flat at zero error, so on its own it exerts almost no pull
-    over the last few cm/s — which is exactly the regime that decides whether
-    the robot holds station or creeps away. The kernels are therefore paired
-    with quadratic ``vel_err``/``yaw_rate_err`` terms (maximum gradient at zero)
-    plus ``hold_*`` terms that switch on only while the joystick is centred.
+    Shapes, both module-level helpers:
+
+    * ``tent_bonus`` — steepest at zero error, linear to zero at ``max_error``.
+      Replaces the old ``-w*e^2`` penalties and keeps the restoring gradient that
+      closes out the last few cm/s, which an exp kernel (flat at zero) cannot.
+    * ``flat_top_bonus`` — full weight inside a band with no gradient, decaying
+      outside. Used for pitch and roll.
+
+    Attitude is a band rather than a target because the reward reads *true*
+    pitch/roll while the policy observes a copy carrying a per-episode mounting
+    bias (+-3 deg pitch, +-1 deg roll). Demanding an exact angle inside that band
+    asks the policy to resolve what its sensor cannot, and trains a precision the
+    hardware IMU can never deliver. Attitude is also no longer a termination
+    criterion — falling is contact-based (see NNDriveEnvCfg.fall_mode) — so the
+    3-to-15 deg shoulder is the only thing keeping the robot vertical.
     """
 
     def __init__(self, cfg):
@@ -627,30 +739,19 @@ class DriveReward:
         yaw_rate_cmd: torch.Tensor,
         current: torch.Tensor,
         delta_current: torch.Tensor,
-        cg_tanh: torch.Tensor,
-        cg_delta_tanh: torch.Tensor,
+        cg_target_angle: torch.Tensor,
+        cg_delta_target_angle: torch.Tensor,
         terminal_penalty: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # The policy only ever sees pos_err clamped to +-cmd_pos_err_clamp_m; the
-        # reward keeps a bounded linear term on the excess so drift past the
-        # clamp is still punished and still pulls home.
+        # reward reads the raw drift so the bonus keeps pulling home past the
+        # clamp, all the way out to where it reaches zero.
         clamp = self.cfg.cmd_pos_err_clamp_m
         pos_err = pos_err_raw.clamp(-clamp, clamp)
-        pos_far = (pos_err_raw.abs() - clamp).clamp(0.0, self.cfg.pos_err_far_max_m)
+        pos_tent_max = clamp + self.cfg.pos_err_far_max_m
 
-        vel_err = (velocity - velocity_cmd).clamp(-1.0, 1.0)
-        yaw_rate_err = (yaw_rate - yaw_rate_cmd).clamp(-3.0, 3.0)
-        # Every penalty below is bounded on purpose. An unbounded per-step
-        # penalty can exceed what falling costs (-fall_penalty once, plus the
-        # forgone alive/tracking reward), at which point diving for the floor is
-        # the optimal policy. The wrapped yaw error was the live example: at
-        # +-pi it cost 0.5*pi^2 = 4.9/step, roughly double the 2.3/step the robot
-        # gives up by falling, and turn-in-place benchmarks fell 98% of the time.
-        yaw_err_pen = yaw_err.clamp(-self.cfg.yaw_error_pen_clamp_rad, self.cfg.yaw_error_pen_clamp_rad)
-        rate_clamp = self.cfg.attitude_rate_pen_clamp_radps
-        pitch_rate_pen = pitch_rate.clamp(-rate_clamp, rate_clamp)
-        roll_rate_pen = roll_rate.clamp(-rate_clamp, rate_clamp)
-        hold_velocity = velocity.clamp(-0.5, 0.5)
+        vel_err = velocity - velocity_cmd
+        yaw_rate_err = yaw_rate - yaw_rate_cmd
         # "Joystick centred" gate: the station-keeping requirement is only
         # meaningful when no motion was asked for.
         hold = (
@@ -658,51 +759,79 @@ class DriveReward:
             & (yaw_rate_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps)
         ).float()
 
+        # Actuation costs are the only negative terms. Each is capped so their
+        # worst-case sum (0.706) stays below rew_alive, which is what guarantees
+        # per-step reward >= 0 and therefore that ending an episode cannot pay.
+        # No penalty below caps its OUTPUT: a saturated penalty has zero gradient
+        # precisely where pressure matters most, and reads as a harmless constant
+        # in the logs. Bounds go on the input, or into the weight. See the
+        # actuation-cost block in nn_drive_env_cfg.py for what that cost twice.
+        current_pen = self.cfg.rew_current * current.pow(2).sum(dim=1)
+        delta_current_clamped = delta_current.clamp(
+            -self.cfg.delta_current_clamp_a, self.cfg.delta_current_clamp_a
+        )
+        delta_current_pen = self.cfg.rew_delta_current * delta_current_clamped.pow(2).sum(dim=1)
+        # Penalize the mapped physical targets in radians. The mapping has
+        # already respected each joint's asymmetric limits, so an invalid
+        # request hidden behind a clamp cannot distort either reward term.
+        cg_pos_pen = self.cfg.rew_cg_pos * cg_target_angle.pow(2).sum(dim=1)
+        # Bounded by clamping the delta, not the penalty: target_angle is not
+        # slew-limited (applied_target is), so one action reversal can swing all
+        # four joints across their full range. Clamping to what the slew limiter
+        # can actually apply in one step keeps the gradient everywhere it means
+        # anything. See cg_rate_delta_clamp_rad in the cfg for why not the output.
+        cg_delta_clamped = cg_delta_target_angle.clamp(
+            -self.cfg.cg_rate_delta_clamp_rad, self.cfg.cg_rate_delta_clamp_rad
+        )
+        cg_rate_pen = self.cfg.rew_cg_rate * cg_delta_clamped.pow(2).sum(dim=1)
+
         components = {
             "alive": torch.ones_like(pitch) * self.cfg.rew_alive,
-            "vel_track": self.cfg.rew_vel_track * torch.exp(-vel_err.pow(2) / self.cfg.vel_track_sigma**2),
+            # Drift home: the single largest bonus after alive.
+            "position": tent_bonus(pos_err_raw, pos_tent_max, self.cfg.rew_position),
+            "hold_velocity": hold
+            * tent_bonus(velocity, self.cfg.hold_velocity_tent_max_mps, self.cfg.rew_hold_velocity),
+            "hold_position": hold
+            * tent_bonus(pos_err, self.cfg.hold_position_tent_max_m, self.cfg.rew_hold_position),
+            # Command tracking: exp kernel (broad) + tent (steep at zero).
+            "vel_track": self.cfg.rew_vel_track
+            * torch.exp(-vel_err.clamp(-1.0, 1.0).pow(2) / self.cfg.vel_track_sigma**2),
+            "vel_err": tent_bonus(vel_err, self.cfg.vel_err_tent_max_mps, self.cfg.rew_vel_err),
             "yaw_rate_track": self.cfg.rew_yaw_rate_track
-            * torch.exp(-yaw_rate_err.pow(2) / self.cfg.yaw_rate_track_sigma**2),
-            "vel_err": -self.cfg.rew_vel_err * vel_err.pow(2),
-            "yaw_rate_err": -self.cfg.rew_yaw_rate_err * yaw_rate_err.pow(2),
-            "position": -self.cfg.rew_position * pos_err.pow(2),
-            "position_far": -self.cfg.rew_position_far * pos_far,
-            "hold_velocity": -self.cfg.rew_hold_velocity * hold * hold_velocity.pow(2),
-            "hold_position": -self.cfg.rew_hold_position * hold * pos_err.pow(2),
-            "yaw_error": -self.cfg.rew_yaw_error * yaw_err_pen.pow(2),
-            "pitch": -self.cfg.rew_pitch * pitch.pow(2),
-            "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate_pen.pow(2),
-            # Quadratic + linear. The quadratic alone has vanishing gradient as
-            # roll -> 0 (24*roll ~ 0.036 per degree at 5 deg, against ~1.0
-            # reward/step), which leaves an arbitrary few-degree lean nearly
-            # free. The robot is symmetric to 0.003 deg (measured airborne
-            # 2026-08-05), and the observed lean flips sign between training
-            # runs (-5.3, -11.0, +4.9 deg), so the lean is the policy breaking
-            # a symmetry nothing forces it to keep -- not a plant property. The
-            # linear term keeps a constant restoring gradient down to zero.
-            "roll": -self.cfg.rew_roll * roll.pow(2) - self.cfg.rew_roll_abs * roll.abs(),
-            "roll_rate": -self.cfg.rew_roll_rate * roll_rate_pen.pow(2),
-            "current": -self.cfg.rew_current * current.pow(2).sum(dim=1),
-            "delta_current": -self.cfg.rew_delta_current * delta_current.pow(2).sum(dim=1),
-            # Penalize the PHYSICAL leg angle, not the tanh action. These were
-            # on the dimensionless action until 2026-08-05, which meant the cost
-            # of a stance was independent of what that stance physically was:
-            # raising cg_action_authority_rad 0.45 -> pi/2 tripled what an action
-            # did while leaving what it cost identical. The policy duly kept
-            # commanding |tanh| ~ 0.92, which went from 24 deg of leg extension
-            # to 82 deg -- standing at near-full extension, COM as high as the
-            # mechanism allows, and fall rates of 0.53-0.94 across every
-            # benchmark scenario. Expressed in radians the weights are
-            # authority-invariant, so changing the range can no longer silently
-            # rescale the reward.
-            "cg_pos": -self.cfg.rew_cg_pos * (cg_tanh * self.cfg.cg_action_authority_rad).pow(2).sum(dim=1),
-            "cg_rate": -self.cfg.rew_cg_rate * (cg_delta_tanh * self.cfg.cg_action_authority_rad).pow(2).sum(dim=1),
+            * torch.exp(-yaw_rate_err.clamp(-3.0, 3.0).pow(2) / self.cfg.yaw_rate_track_sigma**2),
+            "yaw_rate_err": tent_bonus(
+                yaw_rate_err, self.cfg.yaw_rate_err_tent_max_radps, self.cfg.rew_yaw_rate_err
+            ),
+            "yaw_error": tent_bonus(yaw_err, self.cfg.yaw_error_tent_max_rad, self.cfg.rew_yaw_error),
+            # Attitude: a band, not a target. Flat inside the IMU mounting-bias
+            # range so the policy is never asked to resolve an angle it cannot
+            # measure, decaying to ~0 by 15 deg where recovery is unlikely anyway.
+            "pitch": flat_top_bonus(
+                pitch, math.radians(self.cfg.pitch_flat_deg), math.radians(self.cfg.pitch_sigma_deg),
+                self.cfg.rew_pitch,
+            ),
+            "roll": flat_top_bonus(
+                roll, math.radians(self.cfg.roll_flat_deg), math.radians(self.cfg.roll_sigma_deg),
+                self.cfg.rew_roll,
+            ),
+            "pitch_rate": tent_bonus(
+                pitch_rate, self.cfg.attitude_rate_tent_max_radps, self.cfg.rew_pitch_rate
+            ),
+            "roll_rate": tent_bonus(
+                roll_rate, self.cfg.attitude_rate_tent_max_radps, self.cfg.rew_roll_rate
+            ),
+            "current": -current_pen,
+            "delta_current": -delta_current_pen,
+            "cg_pos": -cg_pos_pen,
+            "cg_rate": -cg_rate_pen,
         }
         if terminal_penalty is None:
             terminal_penalty = torch.zeros_like(pitch)
         components["terminal"] = terminal_penalty
         reward = sum(components.values())
-        reward = torch.nan_to_num(reward, nan=0.0, posinf=3.0, neginf=-100.0).clamp(-100.0, 3.0)
+        reward = torch.nan_to_num(
+            reward, nan=0.0, posinf=self.cfg.reward_total_max, neginf=-100.0
+        ).clamp(-100.0, self.cfg.reward_total_max)
         components["total"] = reward
         return reward, components
 
