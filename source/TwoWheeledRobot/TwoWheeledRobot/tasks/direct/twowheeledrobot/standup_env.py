@@ -120,7 +120,7 @@ class StandupEnv(DirectRLEnv):
         self._cg_norm_span: float = lo_ext + lim   # 100° in radians = 5π/9
         self._final_pose_rad_threshold: float = math.radians(self.cfg.final_pose_deg_threshold)
 
-        self._set_cybergear_physx_limits(log_success=True)
+        self._verify_cybergear_physx_limits()
 
         # ── Action buffers ────────────────────────────────────────────────────
         self._prev_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
@@ -188,30 +188,34 @@ class StandupEnv(DirectRLEnv):
 
     # ── Joint limit helpers ──────────────────────────────────────────────────
 
-    def _set_cybergear_physx_limits(self, log_success: bool = False) -> None:
-        """Write mechanical hard stops into PhysX for all CyberGear DOFs."""
+    def _verify_cybergear_physx_limits(self) -> None:
+        """Verify the pre-PhysX USD hard stops and refuse unsafe simulation."""
         try:
-            limits = self.robot.root_physx_view.get_dof_limits().clone()
             cg_cols = [
-                self._cg_fl_ids[0], self._cg_fr_ids[0],
-                self._cg_bl_ids[0], self._cg_br_ids[0],
+                int(self._cg_fl_ids[0]), int(self._cg_fr_ids[0]),
+                int(self._cg_bl_ids[0]), int(self._cg_br_ids[0]),
             ]
-            limits[:, cg_cols, 0] = self._cg_joint_lo[0].cpu()
-            limits[:, cg_cols, 1] = self._cg_joint_hi[0].cpu()
-            _lim_max = math.pi * 2.0 - 1e-4
-            limits.clamp_(-_lim_max, _lim_max)
-            all_ids = torch.arange(self.num_envs, dtype=torch.int32)
-            self.robot.root_physx_view.set_dof_limits(limits, all_ids)
-            if log_success:
-                lo0, hi0 = self._cg_joint_lo[0, 0].item(), self._cg_joint_hi[0, 0].item()
-                lo1, hi1 = self._cg_joint_lo[0, 1].item(), self._cg_joint_hi[0, 1].item()
-                print(
-                    f"[StandupEnv] CyberGear PhysX limits set — "
-                    f"left [{math.degrees(lo0):.1f}°, {math.degrees(hi0):.1f}°]  "
-                    f"right [{math.degrees(lo1):.1f}°, {math.degrees(hi1):.1f}°]"
+            applied = self.robot.root_physx_view.get_dof_limits()
+            applied_lo = applied[:, cg_cols, 0]
+            applied_hi = applied[:, cg_cols, 1]
+            expected_lo = self._cg_joint_lo.to(device=applied.device, dtype=applied.dtype)
+            expected_hi = self._cg_joint_hi.to(device=applied.device, dtype=applied.dtype)
+            if not torch.allclose(applied_lo, expected_lo, atol=1.0e-5, rtol=0.0) or not torch.allclose(
+                applied_hi, expected_hi, atol=1.0e-5, rtol=0.0
+            ):
+                raise RuntimeError(
+                    "CyberGear limit readback mismatch: "
+                    f"expected lower={expected_lo[0].tolist()}, upper={expected_hi[0].tolist()}, "
+                    f"got lower={applied_lo[0].tolist()}, upper={applied_hi[0].tolist()}"
                 )
+            lower_deg = [round(math.degrees(value), 1) for value in expected_lo[0].tolist()]
+            upper_deg = [round(math.degrees(value), 1) for value in expected_hi[0].tolist()]
+            print(
+                "[StandupEnv] CyberGear PhysX limit readback verified "
+                f"[fl, fr, bl, br]: lower={lower_deg}°, upper={upper_deg}°"
+            )
         except Exception as exc:
-            print(f"[StandupEnv] Warning: could not set CyberGear PhysX limits: {exc}")
+            raise RuntimeError("CyberGear mechanical limits are not verified; refusing to run") from exc
 
     def _enforce_cybergear_joint_state_limits(self) -> None:
         """Clamp escaped CyberGear joint state back to the mechanical range."""
@@ -617,8 +621,6 @@ class StandupEnv(DirectRLEnv):
         joint_vel[:, self._cg_ids] = 0.0
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
         self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self._set_cybergear_physx_limits()
-
         # ── Domain randomisation ───────────────────────────────────────────────
         env_ids_cpu = (
             env_ids.cpu()

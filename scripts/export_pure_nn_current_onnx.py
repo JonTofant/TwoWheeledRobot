@@ -8,9 +8,12 @@ This script appends the deployment contract final layer directly in ONNX:
       current_a = tanh(actor(obs)) * I_max
 
   Drive policy (--cg-outputs 4, 6 outputs total):
-      commands  = tanh(actor(obs)) * [auth, auth, auth, auth, I_max, I_max]
+      t = tanh(actor(obs))
+      cg_target[i] = t[i] * upper[i] if t[i] >= 0 else -t[i] * lower[i]
+      wheel_current = t[4:6] * I_max
       → outputs [0-3] are CyberGear position targets in rad (firmware must
-        still clamp to joint limits and slew-limit at cg_target_slew_radps),
+        still defensively clamp to the same limits and slew-limit at
+        cg_target_slew_radps),
         outputs [4-5] are left/right DDSM115 currents in A.
 
 Appending ONNX nodes avoids retracing Isaac Lab's TorchScript policy exporter,
@@ -25,12 +28,41 @@ from pathlib import Path
 
 import torch
 
+DEFAULT_CG_LOWER_RAD = [math.radians(-10.0), math.radians(-90.0), math.radians(-90.0), math.radians(-10.0)]
+DEFAULT_CG_UPPER_RAD = [math.radians(90.0), math.radians(10.0), math.radians(10.0), math.radians(90.0)]
 
-def _scale_vector(cg_outputs: int, cg_authority_rad: float, i_max_a: float) -> list[float]:
-    return [cg_authority_rad] * cg_outputs + [i_max_a] * 2
+
+class OnnxRuntimeUnavailable(RuntimeError):
+    """Raised only when numerical validation cannot start without onnxruntime."""
 
 
-def append_scaled_output(actor_onnx_path: Path, output_path: Path, scale: list[float], output_name: str) -> None:
+def _deployment_output(
+    actor_output: torch.Tensor,
+    cg_outputs: int,
+    i_max_a: float,
+    cg_lower_rad: list[float],
+    cg_upper_rad: list[float],
+) -> torch.Tensor:
+    squashed = torch.tanh(actor_output)
+    if cg_outputs == 0:
+        return squashed * i_max_a
+    lower = torch.tensor(cg_lower_rad, dtype=squashed.dtype, device=squashed.device)
+    upper = torch.tensor(cg_upper_rad, dtype=squashed.dtype, device=squashed.device)
+    cg_action = squashed[:, :cg_outputs]
+    cg_target = torch.where(cg_action >= 0.0, cg_action * upper, (-cg_action) * lower)
+    wheel_current = squashed[:, cg_outputs:] * i_max_a
+    return torch.cat([cg_target, wheel_current], dim=1)
+
+
+def append_deployment_output(
+    actor_onnx_path: Path,
+    output_path: Path,
+    cg_outputs: int,
+    i_max_a: float,
+    cg_lower_rad: list[float],
+    cg_upper_rad: list[float],
+    output_name: str,
+) -> None:
     import numpy as np
     import onnx
     from onnx import TensorProto, helper, numpy_helper
@@ -43,18 +75,67 @@ def append_scaled_output(actor_onnx_path: Path, output_path: Path, scale: list[f
     actor_output = graph.output[0]
     actor_output_name = actor_output.name
     tanh_output_name = actor_output_name + "_tanh"
-    scale_name = "output_scale"
 
     graph.node.append(helper.make_node("Tanh", inputs=[actor_output_name], outputs=[tanh_output_name], name="out_tanh"))
-    scale_arr = np.asarray(scale, dtype=np.float32)
-    if len(scale_arr) == 2 and scale_arr[0] == scale_arr[1]:
+    if cg_outputs == 0:
         # Keep the legacy scalar initializer for 2-output balance policies so
         # existing STM32 parsers keep working.
-        scale_arr = np.array(scale_arr[0], dtype=np.float32)
-    graph.initializer.append(numpy_helper.from_array(scale_arr, name=scale_name))
-    graph.node.append(
-        helper.make_node("Mul", inputs=[tanh_output_name, scale_name], outputs=[output_name], name="out_scale")
-    )
+        scale_name = "output_scale"
+        graph.initializer.append(numpy_helper.from_array(np.array(i_max_a, dtype=np.float32), name=scale_name))
+        graph.node.append(
+            helper.make_node("Mul", inputs=[tanh_output_name, scale_name], outputs=[output_name], name="out_scale")
+        )
+    else:
+        cg_indices_name = "cg_output_indices"
+        wheel_indices_name = "wheel_output_indices"
+        lower_name = "cg_lower_rad"
+        upper_name = "cg_upper_rad"
+        wheel_scale_name = "wheel_output_scale"
+        graph.initializer.extend(
+            [
+                numpy_helper.from_array(np.arange(cg_outputs, dtype=np.int64), name=cg_indices_name),
+                numpy_helper.from_array(np.arange(cg_outputs, cg_outputs + 2, dtype=np.int64), name=wheel_indices_name),
+                numpy_helper.from_array(np.asarray(cg_lower_rad, dtype=np.float32), name=lower_name),
+                numpy_helper.from_array(np.asarray(cg_upper_rad, dtype=np.float32), name=upper_name),
+                numpy_helper.from_array(np.array(i_max_a, dtype=np.float32), name=wheel_scale_name),
+            ]
+        )
+        graph.node.extend(
+            [
+                helper.make_node(
+                    "Gather", inputs=[tanh_output_name, cg_indices_name], outputs=["cg_tanh"], name="cg_select", axis=1
+                ),
+                helper.make_node(
+                    "Gather",
+                    inputs=[tanh_output_name, wheel_indices_name],
+                    outputs=["wheel_tanh"],
+                    name="wheel_select",
+                    axis=1,
+                ),
+                helper.make_node("Relu", inputs=["cg_tanh"], outputs=["cg_positive"], name="cg_positive_part"),
+                helper.make_node("Neg", inputs=["cg_tanh"], outputs=["cg_negated"], name="cg_negate"),
+                helper.make_node("Relu", inputs=["cg_negated"], outputs=["cg_negative"], name="cg_negative_part"),
+                helper.make_node(
+                    "Mul", inputs=["cg_positive", upper_name], outputs=["cg_positive_rad"], name="cg_scale_positive"
+                ),
+                helper.make_node(
+                    "Mul", inputs=["cg_negative", lower_name], outputs=["cg_negative_rad"], name="cg_scale_negative"
+                ),
+                helper.make_node(
+                    "Add", inputs=["cg_positive_rad", "cg_negative_rad"], outputs=["cg_target_rad"], name="cg_target"
+                ),
+                helper.make_node(
+                    "Mul", inputs=["wheel_tanh", wheel_scale_name], outputs=["wheel_current_a"], name="wheel_scale"
+                ),
+                helper.make_node(
+                    "Concat",
+                    inputs=["cg_target_rad", "wheel_current_a"],
+                    outputs=[output_name],
+                    name="commands_concat",
+                    axis=1,
+                ),
+            ]
+        )
 
     output_type = actor_output.type.tensor_type
     new_output = helper.make_tensor_value_info(output_name, TensorProto.FLOAT, None)
@@ -67,23 +148,30 @@ def append_scaled_output(actor_onnx_path: Path, output_path: Path, scale: list[f
 
 
 def validate(
-    torchscript_path: Path, onnx_path: Path, obs_dim: int, samples: int, tolerance: float, scale: list[float]
+    torchscript_path: Path,
+    onnx_path: Path,
+    obs_dim: int,
+    samples: int,
+    tolerance: float,
+    cg_outputs: int,
+    i_max_a: float,
+    cg_lower_rad: list[float],
+    cg_upper_rad: list[float],
 ) -> float:
     import numpy as np
 
     try:
         import onnxruntime as ort
     except ModuleNotFoundError as exc:
-        raise RuntimeError(
+        raise OnnxRuntimeUnavailable(
             "onnxruntime is not installed; exported ONNX was written but numerical validation was skipped. "
             "Install onnxruntime to validate exports."
         ) from exc
 
     torch_policy = torch.jit.load(str(torchscript_path), map_location="cpu").eval()
-    scale_t = torch.tensor(scale, dtype=torch.float32)
     obs = torch.randn(samples, obs_dim, dtype=torch.float32).clamp(-3.0, 3.0)
     with torch.inference_mode():
-        torch_out = (torch.tanh(torch_policy(obs)) * scale_t).cpu().numpy()
+        torch_out = _deployment_output(torch_policy(obs), cg_outputs, i_max_a, cg_lower_rad, cg_upper_rad).cpu().numpy()
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
     # Isaac Lab's ONNX actor export uses dynamic_axes={}, so the graph's batch
@@ -116,10 +204,20 @@ def main() -> None:
         help="Number of leading CyberGear outputs (0 for balance policies, 4 for NNDrive).",
     )
     parser.add_argument(
-        "--cg-authority-rad",
+        "--cg-lower-rad",
         type=float,
-        default=math.pi / 2,
-        help="CyberGear tanh scale (rad). Must equal NNDriveEnvCfg.cg_action_authority_rad.",
+        nargs=4,
+        default=DEFAULT_CG_LOWER_RAD,
+        metavar=("FL", "FR", "BL", "BR"),
+        help="CyberGear lower joint limits in radians (fl fr bl br).",
+    )
+    parser.add_argument(
+        "--cg-upper-rad",
+        type=float,
+        nargs=4,
+        default=DEFAULT_CG_UPPER_RAD,
+        metavar=("FL", "FR", "BL", "BR"),
+        help="CyberGear upper joint limits in radians (fl fr bl br).",
     )
     parser.add_argument("--samples", type=int, default=256)
     parser.add_argument("--tolerance", type=float, default=1.0e-4)
@@ -133,14 +231,37 @@ def main() -> None:
     actor_onnx = args.actor_onnx if args.actor_onnx is not None else args.policy.with_suffix(".onnx")
     if not actor_onnx.is_file():
         raise SystemExit(f"Actor ONNX not found: {actor_onnx}. Run scripts/rsl_rl/play.py first or pass --actor-onnx.")
+    if args.cg_outputs not in (0, 4):
+        parser.error("--cg-outputs must be 0 for balance or 4 for NNDrive")
 
-    scale = _scale_vector(args.cg_outputs, args.cg_authority_rad, args.i_max_a)
     output_name = "commands" if args.cg_outputs > 0 else "current_a"
-    append_scaled_output(actor_onnx, args.output, scale, output_name)
-    print(f"Exported {args.output} (outputs={len(scale)}, scale={scale})")
+    append_deployment_output(
+        actor_onnx,
+        args.output,
+        args.cg_outputs,
+        args.i_max_a,
+        args.cg_lower_rad,
+        args.cg_upper_rad,
+        output_name,
+    )
+    output_count = args.cg_outputs + 2
+    print(
+        f"Exported {args.output} (outputs={output_count}, cg_lower_rad={args.cg_lower_rad}, "
+        f"cg_upper_rad={args.cg_upper_rad}, i_max_a={args.i_max_a})"
+    )
     try:
-        max_error = validate(args.policy, args.output, args.obs_dim, args.samples, args.tolerance, scale)
-    except RuntimeError as exc:
+        max_error = validate(
+            args.policy,
+            args.output,
+            args.obs_dim,
+            args.samples,
+            args.tolerance,
+            args.cg_outputs,
+            args.i_max_a,
+            args.cg_lower_rad,
+            args.cg_upper_rad,
+        )
+    except OnnxRuntimeUnavailable as exc:
         if args.require_validation:
             raise SystemExit(str(exc)) from exc
         print(f"WARNING: {exc}")

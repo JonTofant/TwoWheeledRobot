@@ -25,6 +25,20 @@ gym.register(
     },
 )
 
+# Diagnostic A/B counterpart to NNDrive-v0. It deliberately retains the same
+# 20 observations, rewards, command curriculum, dynamics and randomization, but
+# removes the four policy-controlled leg outputs and holds their targets at the
+# configured fixed stance (zero radians by default).
+gym.register(
+    id="Template-Twowheeledrobot-NNDriveFixedStance-v0",
+    entry_point=f"{__name__}.nn_drive_env:NNDriveEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.nn_drive_env_cfg:NNDriveFixedStanceEnvCfg",
+        "rsl_rl_cfg_entry_point": (f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDriveFixedStancePPORunnerCfg"),
+    },
+)
+
 # Presentation-only variant of the NN drive task: identical policy contract, but
 # a hand-built training-ground scene (pads + drop ledge) for video/screenshots.
 # Used by scripts/record_isaac_demo.py; never trained against.

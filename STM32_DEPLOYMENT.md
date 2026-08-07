@@ -113,23 +113,27 @@ the same terms give station keeping, including on inclines.
 
 ```text
 0-3  CyberGear position targets in rad [fl, fr, bl, br]
-     range +-1.5708 rad (pi/2) around zero stance; firmware MUST additionally:
-       - clamp to joint limits (fl/br: [-10, +90] deg, fr/bl: [-90, +10] deg)
-       - slew-limit the applied target at 3.0 rad/s (0.045 rad per 15 ms tick)
+     zero-centred piecewise mapping from each tanh output:
+       - tanh=-1 -> that joint's lower limit
+       - tanh= 0 -> 0 rad (hardware failsafe pose)
+       - tanh=+1 -> that joint's upper limit
+     limits [fl, fr, bl, br]:
+       lower = [-10, -90, -90, -10] deg
+       upper = [+90, +10, +10, +90] deg
+     firmware MUST defensively clamp to the same limits and slew-limit the
+     applied target at 3.0 rad/s (0.045 rad per 15 ms tick).
 4-5  left/right DDSM115 current commands in A (+-2.0 A)
 ```
 
-**The CyberGear tanh scale changed 0.45 -> pi/2 rad on 2026-08-05.** At 0.45 the
-policy could only command +-25.8 deg, so two thirds of the joint's +90 deg
-extend travel was unreachable and the legs saturated in both directions at once.
-The joint limits themselves are unchanged; only the action scale is. The
-firmware's joint-limit clamp below is now doing real work on the extend side as
-well as the retract side -- it must be present, not assumed redundant.
+The piecewise mapping uses both halves of the policy action without ever asking
+for an invalid angle. For example, front-left maps `[-1, 0, +1]` to
+`[-10 deg, 0 deg, +90 deg]`, while front-right maps it to
+`[-90 deg, 0 deg, +10 deg]`. This intentionally preserves zero action as the
+zero-angle hardware failsafe; a single affine lower-to-upper mapping would put
+zero action at the range midpoint instead.
 
-Note the scale is symmetric while the joint range is not ([-10, +90] deg), so
-`tanh(a) < -0.111` all lands on the -10 deg stop. That saturated region is
-expected. Do not "fix" it by re-centring the tanh mapping: zero action must keep
-mapping to zero stance, because that is the failsafe pose on hardware.
+Policies trained before this mapping change are incompatible and must not be
+re-exported under the new contract without retraining.
 
 Train all curriculum stages (flat → commands → pushes → terrain) and export:
 
@@ -143,7 +147,7 @@ Manual export from an existing `policy.pt`:
 python scripts/export_pure_nn_current_onnx.py \
   --policy logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy.pt \
   --output logs/rsl_rl/nn_drive_two_wheel/<run>/exported/policy_drive.onnx \
-  --obs-dim 20 --cg-outputs 4 --cg-authority-rad 1.5708 --i-max-a 2.0
+  --obs-dim 20 --cg-outputs 4 --i-max-a 2.0 --require-validation
 ```
 
 Benchmark station keeping, command tracking, and disturbances (add

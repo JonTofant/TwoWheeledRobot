@@ -21,6 +21,11 @@ mass/COM, odometry scale and IMU biases.
 `Template-Twowheeledrobot-NNDriveDemo-v0` is a presentation-only variant with a hand-built
 scene for stills and video. It is never trained against.
 
+`Template-Twowheeledrobot-NNDriveFixedStance-v0` is a diagnostic A/B variant. It keeps the
+same 20 observations, rewards, commands, randomization and dynamics, holds all four
+CyberGear targets at zero radians, and exposes only the two wheel-current actions. It is not
+a deployment contract.
+
 The observation and action layouts are the deployment contract and are documented in
 `STM32_DEPLOYMENT.md`. They must stay aligned with the firmware.
 
@@ -44,6 +49,7 @@ source/TwoWheeledRobot/TwoWheeledRobot/
 scripts/
   rsl_rl/{train,play,cli_args}.py
   train_nn_drive_curriculum.py     # five-stage curriculum
+  run_nn_drive_action_ab.py        # short fixed-stance vs four-leg A/B
   benchmark_nn_drive.py            # scenario benchmark
   diagnose_turn_failure.py         # velocity / yaw-rate sweeps
   export_pure_nn_current_onnx.py   # TorchScript -> ONNX with deployment scaling
@@ -65,11 +71,25 @@ Install the extension (editable) inside your Isaac Lab Python environment:
 python -m pip install -e source/TwoWheeledRobot
 ```
 
-Train the full curriculum (five stages, auto-resuming, exports at the end):
+Train the full curriculum. Each stage reward-shortlists saved checkpoints,
+promotes only one that passes its deterministic scenario gate, and records the
+choice in `selected_checkpoint.json`; the final selected model is then exported
+with mandatory numerical ONNX validation:
 
 ```bash
 python scripts/train_nn_drive_curriculum.py --num_envs 4096 --headless
 ```
+
+Before another full curriculum, run the matched stage-1 action-interface A/B. The default is
+one paired seed and 200 iterations per arm; add seeds only if the first result is close:
+
+```bash
+python scripts/run_nn_drive_action_ab.py --num-envs 4096 --headless
+python scripts/run_nn_drive_action_ab.py --num-envs 4096 --seeds 42 43 44 --headless
+```
+
+Each arm trains from scratch and benchmarks its final checkpoint on identical station-keeping
+and slow forward/backward scenarios. Results are written under `outputs/nn_drive_action_ab/`.
 
 Single stage, or resume a specific run:
 
@@ -82,6 +102,7 @@ Benchmark and diagnose a trained policy:
 
 ```bash
 python scripts/benchmark_nn_drive.py --policy <run>/exported/policy.pt --num_envs 64 --headless
+python scripts/benchmark_nn_drive.py --checkpoint <run>/model_500.pt --num_envs 64 --headless
 python scripts/diagnose_turn_failure.py --policy <run>/exported/policy.pt --headless --velocities 0.1 0.3 0.4 0.55
 ```
 
@@ -90,7 +111,7 @@ Export for the STM32 (20 inputs, 6 outputs):
 ```bash
 python scripts/export_pure_nn_current_onnx.py --policy <run>/exported/policy.pt \
   --output <run>/exported/policy_drive.onnx --obs-dim 20 --cg-outputs 4 \
-  --cg-authority-rad 1.5708 --i-max-a 2.0 --require-validation
+  --i-max-a 2.0 --require-validation
 ```
 
 Lint:

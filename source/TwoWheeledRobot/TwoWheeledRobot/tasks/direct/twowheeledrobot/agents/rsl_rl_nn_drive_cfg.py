@@ -1,6 +1,6 @@
 """RSL-RL PPO configuration for the joystick NN drive controller.
 
-The [64, 64] actor is still comfortably STM32F446RE-sized: with 18 inputs and
+The [64, 64] actor is still comfortably STM32F446RE-sized: with 20 inputs and
 6 outputs it is ~5.8k float32 parameters (~23 KB flash, ~21k MACs per inference
 — well under 1 ms at 180 MHz with the CMSIS FPU).
 """
@@ -14,7 +14,10 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class NNDrivePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 64
     max_iterations = 2000
-    save_interval = 100
+    # Selection benchmarks a reward-ranked shortlist of saved checkpoints.
+    # A 25-iteration interval prevents a short-lived optimum (the previous run
+    # peaked 17 iterations after a save) from disappearing between snapshots.
+    save_interval = 25
     experiment_name = "nn_drive_two_wheel"
     # Actions 4/5 drive the wheels. Below 0.15 raw std their exploration is
     # largely swallowed by the randomized motor deadzone.
@@ -53,3 +56,11 @@ class NNDrivePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         max_grad_norm=0.5,
         normalize_advantage_per_mini_batch=True,
     )
+
+
+@configclass
+class NNDriveFixedStancePPORunnerCfg(NNDrivePPORunnerCfg):
+    """Matched PPO config for the two-action fixed-stance diagnostic task."""
+
+    experiment_name = "nn_drive_fixed_stance"
+    action_std_floor: list[float] = [0.15, 0.15]
