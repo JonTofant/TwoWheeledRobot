@@ -7,7 +7,12 @@ The [64, 64] actor is still comfortably STM32F446RE-sized: with 20 inputs and
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoActorCriticRecurrentCfg,
+    RslRlPpoAlgorithmCfg,
+)
 
 
 @configclass
@@ -64,3 +69,39 @@ class NNDriveFixedStancePPORunnerCfg(NNDrivePPORunnerCfg):
 
     experiment_name = "nn_drive_fixed_stance"
     action_std_floor: list[float] = [0.15, 0.15]
+
+
+@configclass
+class NNDriveFixedStanceGRUPPORunnerCfg(NNDriveFixedStancePPORunnerCfg):
+    """Recurrent (GRU) counterpart of NNDriveFixedStancePPORunnerCfg.
+
+    For the point-vs-range-vs-recurrent-under-range comparison: this must be
+    registered against the SAME env_cfg_entry_point (NNDriveFixedStanceEnvCfg)
+    as the plain MLP arm, so observation, reward, curriculum and dynamics stay
+    byte-identical — the only difference between the two trained policies is
+    this runner cfg. See __init__.py's Template-Twowheeledrobot-
+    NNDriveFixedStanceGRU-v0 registration.
+
+    actor_hidden_dims/critic_hidden_dims are inherited unchanged from the MLP
+    config: ActorCriticRecurrent feeds obs through the RNN first and then the
+    SAME [64, 64]/[128, 128] MLP head (see rsl_rl.modules.ActorCriticRecurrent
+    .__init__: self.actor = MLP(rnn_hidden_dim, ..., actor_hidden_dims, ...)),
+    so this is the GRU added as a memory front-end, not a differently-shaped
+    network -- the comparison this is for is about recurrence, not capacity.
+
+    rnn_hidden_dim=64 matches the MLP width for the same reason. Untuned
+    starting point, not a claim that it's optimal.
+    """
+
+    policy: RslRlPpoActorCriticRecurrentCfg = RslRlPpoActorCriticRecurrentCfg(
+        init_noise_std=0.3,
+        noise_std_type="log",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[64, 64],
+        critic_hidden_dims=[128, 128],
+        activation="relu",
+        rnn_type="gru",
+        rnn_hidden_dim=64,
+        rnn_num_layers=1,
+    )

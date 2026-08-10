@@ -20,6 +20,14 @@ from nn_drive_benchmark_contract import STAGE_GATE_SCENARIOS, checkpoint_score, 
 
 STAGE_TERRAIN = {1: "flat", 2: "flat", 3: "flat", 4: "generator", 5: "generator"}
 SELECTION_MANIFEST = "selected_checkpoint.json"
+# (obs_dim, cg_outputs) per task -- must track NNDriveEnvCfg/NNDriveFixedStanceEnvCfg's
+# observation_space and action_space (4 CyberGear + 2 wheel vs. 2 wheel only).
+# obs_dim went 20/12 -> 21/13 2026-08-10 (yaw_err sin/cos replacing a single clamped radian).
+TASK_EXPORT_DIMS = {
+    "Template-Twowheeledrobot-NNDrive-v0": (21, 4),
+    "Template-Twowheeledrobot-NNDriveFixedStance-v0": (13, 0),
+    "Template-Twowheeledrobot-NNDriveFixedStanceGRU-v0": (13, 0),
+}
 
 
 def checkpoint_iteration(checkpoint: Path) -> int:
@@ -93,12 +101,16 @@ def benchmark_checkpoint(
     num_steps: int,
     seed: int,
     headless: bool,
+    env_overrides: list[str],
+    task: str,
 ) -> dict:
     benchmark_dir = checkpoint.parent / "benchmark_selection"
     output = benchmark_dir / f"{checkpoint.stem}.json"
     cmd = [
         sys.executable,
         str(repo / "scripts" / "benchmark_nn_drive.py"),
+        "--task",
+        task,
         "--checkpoint",
         str(checkpoint),
         "--num_envs",
@@ -116,6 +128,11 @@ def benchmark_checkpoint(
     ]
     if headless:
         cmd.append("--headless")
+    # Must match the env.* overrides training used (e.g. Arm A's nominal-DR
+    # ranges), or the gate benchmarks a policy against a distribution it was
+    # never trained on -- an out-of-distribution mismatch that looks like a
+    # quality failure but is actually just a config mismatch.
+    cmd.extend(env_overrides)
     print(" ".join(cmd))
     subprocess.run(cmd, cwd=repo, check=True)
     return json.loads(output.read_text(encoding="utf-8"))
@@ -131,6 +148,9 @@ def select_checkpoint(
     benchmark_num_steps: int,
     benchmark_seed: int,
     headless: bool,
+    env_overrides: list[str],
+    task: str,
+    allow_gate_failure: bool = False,
 ) -> Path:
     candidates = shortlist_checkpoints(run_dir, shortlist_count)
     evaluated = []
@@ -142,9 +162,11 @@ def select_checkpoint(
             stage=stage,
             terrain=STAGE_TERRAIN[stage],
             num_envs=benchmark_num_envs,
+            env_overrides=env_overrides,
             num_steps=benchmark_num_steps,
             seed=benchmark_seed,
             headless=headless,
+            task=task,
         )
         results = payload["scenarios"]
         failures = stage_gate_failures(stage, results)
@@ -162,11 +184,30 @@ def select_checkpoint(
             passing.append((score, checkpoint))
 
     selected = min(passing, default=None, key=lambda item: item[0])
+    used_fallback = False
+    if selected is None and allow_gate_failure and evaluated:
+        # No candidate passed the gate. Rather than halt an unattended
+        # overnight run, fall back to the best-scoring candidate among ALL
+        # evaluated checkpoints (not just passing ones) so the curriculum can
+        # still reach export by morning. This is a real, disclosed compromise,
+        # not a silent one: gate_passed stays false in its own record below,
+        # and the top-level manifest flags fallback_used explicitly so this
+        # can never be mistaken for a policy that actually passed its gate.
+        best = min(evaluated, key=lambda c: c["score"])
+        selected = (best["score"], run_dir / best["checkpoint"])
+        used_fallback = True
+        print(
+            f"WARNING: stage {stage} gate failed for every candidate; falling back to "
+            f"best-scoring {best['checkpoint']} (score={best['score']:.6f}) per --allow-gate-failure. "
+            "This checkpoint did NOT pass its gate -- see gate_failures in the manifest."
+        )
+
     manifest = {
         "stage": stage,
         "run": run_dir.name,
         "selected_checkpoint": selected[1].name if selected is not None else None,
         "selection_score": selected[0] if selected is not None else None,
+        "selected_via_gate_failure_fallback": used_fallback,
         "candidates": evaluated,
     }
     manifest_path = run_dir / SELECTION_MANIFEST
@@ -195,6 +236,23 @@ def selected_checkpoint_from_manifest(run_dir: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train NNDrive through benchmark-gated stages.")
+    parser.add_argument("--task", type=str, default="Template-Twowheeledrobot-NNDrive-v0")
+    parser.add_argument(
+        "--run-name-prefix",
+        type=str,
+        default="",
+        help="Prepended to each stage's run_name (e.g. 'point' -> 'point_stage1'), so multiple "
+        "arms sharing one experiment-name directory stay distinguishable at a glance. "
+        "newly_created_run()'s _stageN suffix match still works with any prefix.",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        type=str,
+        default="nn_drive_two_wheel",
+        help="Must match the target task's RunnerCfg.experiment_name (nn_drive_two_wheel for "
+        "NNDrive-v0, nn_drive_fixed_stance for NNDriveFixedStance(GRU)-v0) -- this is where "
+        "runs actually land under logs/rsl_rl/, independent of --task.",
+    )
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--iterations", type=int, nargs=5, default=[200, 350, 200, 250, 300])
     parser.add_argument("--start-stage", type=int, default=1, choices=[1, 2, 3, 4, 5])
@@ -212,17 +270,36 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--i-max-a", type=float, default=2.0)
     parser.add_argument("--skip-export", action="store_true")
+    parser.add_argument(
+        "--allow-gate-failure",
+        action="store_true",
+        help="If no shortlisted checkpoint passes a stage's gate, fall back to the best-scoring "
+        "one instead of halting, so an unattended run can still reach export. The fallback is "
+        "always disclosed (gate_passed=false, selected_via_gate_failure_fallback=true in "
+        "selected_checkpoint.json) -- never silent.",
+    )
     parser.add_argument("--headless", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args, env_overrides = parser.parse_known_args()
+    # Unrecognized trailing args are passed through verbatim as Hydra env.*
+    # overrides to every train/benchmark subprocess (e.g. Arm A's
+    # env.motor_gain_range=[1.0,1.0]) -- both must agree, or the gate
+    # benchmarks a policy against a distribution it was never trained on.
+    if env_overrides:
+        print(f"Passing through env overrides to every subprocess: {env_overrides}")
     if args.selection_candidates < 1:
         parser.error("--selection-candidates must be at least 1")
+    if args.task not in TASK_EXPORT_DIMS:
+        parser.error(
+            f"--task {args.task!r} has no known (obs_dim, cg_outputs) for export; "
+            f"add it to TASK_EXPORT_DIMS. Known tasks: {sorted(TASK_EXPORT_DIMS)}"
+        )
     if args.start_stage > 1 and args.load_run is None:
         parser.error("--load-run is required when --start-stage > 1; newest-run fallback is intentionally disabled")
 
     repo = Path(__file__).resolve().parents[1]
     train_py = repo / "scripts" / "rsl_rl" / "train.py"
-    log_root = repo / "logs" / "rsl_rl" / "nn_drive_two_wheel"
+    log_root = repo / "logs" / "rsl_rl" / args.experiment_name
     selected_run: Path | None = None
     selected_checkpoint: Path | None = None
     if args.load_run is not None:
@@ -244,15 +321,16 @@ def main() -> None:
             sys.executable,
             str(train_py),
             "--task",
-            "Template-Twowheeledrobot-NNDrive-v0",
+            args.task,
             "--num_envs",
             str(args.num_envs),
             "--max_iterations",
             str(iterations),
             "--run_name",
-            f"stage{stage}",
+            f"{args.run_name_prefix}_stage{stage}" if args.run_name_prefix else f"stage{stage}",
             f"env.curriculum_stage={stage}",
             f"env.terrain_mode={STAGE_TERRAIN[stage]}",
+            *env_overrides,
         ]
         if args.headless:
             cmd.append("--headless")
@@ -277,6 +355,9 @@ def main() -> None:
             benchmark_num_steps=args.benchmark_num_steps,
             benchmark_seed=args.benchmark_seed,
             headless=args.headless,
+            env_overrides=env_overrides,
+            task=args.task,
+            allow_gate_failure=args.allow_gate_failure,
         )
 
     if selected_run is None or selected_checkpoint is None:
@@ -288,13 +369,14 @@ def main() -> None:
         sys.executable,
         str(repo / "scripts" / "rsl_rl" / "play.py"),
         "--task",
-        "Template-Twowheeledrobot-NNDrive-v0",
+        args.task,
         "--checkpoint",
         str(selected_checkpoint),
         "--num_envs",
         "1",
         "--num_steps",
         "1",
+        *env_overrides,
     ]
     if args.headless:
         play_cmd.append("--headless")
@@ -306,6 +388,7 @@ def main() -> None:
     if not exported_policy.is_file() or not actor_onnx.is_file():
         raise RuntimeError(f"play.py did not produce both required actor exports in {exported_policy.parent}")
     drive_onnx = selected_run / "exported" / "policy_drive.onnx"
+    obs_dim, cg_outputs = TASK_EXPORT_DIMS[args.task]
     export_cmd = [
         sys.executable,
         str(repo / "scripts" / "export_pure_nn_current_onnx.py"),
@@ -316,9 +399,9 @@ def main() -> None:
         "--output",
         str(drive_onnx),
         "--obs-dim",
-        "20",
+        str(obs_dim),
         "--cg-outputs",
-        "4",
+        str(cg_outputs),
         "--i-max-a",
         str(args.i_max_a),
         "--require-validation",

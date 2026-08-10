@@ -39,6 +39,21 @@ gym.register(
     },
 )
 
+# Recurrent (GRU) counterpart for the point/range/range+GRU actuator-DR
+# comparison. Deliberately reuses the exact same env_cfg_entry_point as
+# NNDriveFixedStance-v0 above -- observation, reward, curriculum and dynamics
+# must stay identical between the two; only rsl_rl_cfg_entry_point (the
+# network) differs. Do not give this task its own env cfg subclass.
+gym.register(
+    id="Template-Twowheeledrobot-NNDriveFixedStanceGRU-v0",
+    entry_point=f"{__name__}.nn_drive_env:NNDriveEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.nn_drive_env_cfg:NNDriveFixedStanceEnvCfg",
+        "rsl_rl_cfg_entry_point": (f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDriveFixedStanceGRUPPORunnerCfg"),
+    },
+)
+
 # Presentation-only variant of the NN drive task: identical policy contract, but
 # a hand-built training-ground scene (pads + drop ledge) for video/screenshots.
 # Used by scripts/record_isaac_demo.py; never trained against.
