@@ -56,7 +56,7 @@ Template-Twowheeledrobot-NNDrive-v0
 
 Policy rate is 66.7 Hz (`dt = 0.015 s`), same as the balance controller. The
 actor is `[64, 64]` (~5.8k float32 parameters, ~23 KB — trivially fits the
-STM32F446RE). The deployed model takes 20 normalized `float32` observations and
+STM32F446RE). The deployed model takes 21 normalized `float32` observations and
 returns 6 commands.
 
 ### Observation layout (divide raw value by the listed scale)
@@ -66,22 +66,62 @@ returns 6 commands.
  1  velocity / 1.0 m/s       wheel odometry mean: 0.5*(wL + wR)*R_wheel
  2  pitch / 25 deg           rad
  3  pitch_rate / 4.0 rad/s
- 4  yaw_err / 1.5 rad        wrap(yaw - yaw_ref) to [-pi, pi] BEFORE dividing
- 5  yaw_rate / 4.0 rad/s
- 6  velocity_cmd / 1.0 m/s   slew-limited joystick command (see below)
- 7  yaw_rate_cmd / 2.0 rad/s slew-limited joystick command
- 8-11  cg_pos / 1.5708 rad   CyberGear joint angles [fl, fr, bl, br] (pi/2)
-12-13  prev_current / 2.0 A  previous wheel current commands [left, right]
-14-17  prev_cg_action        previous tanh CyberGear actions, already [-1, 1]
-18  roll / 25 deg            rad, from the same IMU as pitch
-19  roll_rate / 4.0 rad/s    rad/s, gyro axis matching roll
+ 4  sin(yaw - yaw_ref)       no scaling, already [-1, 1] -- RAW difference, do NOT wrap first
+ 5  cos(yaw - yaw_ref)       no scaling, already [-1, 1] -- RAW difference, do NOT wrap first
+ 6  yaw_rate / 4.0 rad/s
+ 7  velocity_cmd / 1.0 m/s   slew-limited joystick command (see below)
+ 8  yaw_rate_cmd / 2.0 rad/s slew-limited joystick command
+ 9-12  cg_pos / 1.5708 rad   CyberGear joint angles [fl, fr, bl, br] (pi/2)
+13-14  prev_current / 2.0 A  previous wheel current commands [left, right]
+15-18  prev_cg_action        previous tanh CyberGear actions, already [-1, 1]
+19  roll / 25 deg            rad, from the same IMU as pitch
+20  roll_rate / 4.0 rad/s    rad/s, gyro axis matching roll
 ```
 
-**Roll/roll_rate were added 2026-08-04 (18 -> 20 values).** They are appended
-rather than placed next to pitch so that indices 0-17 keep their meaning: the
-firmware change is two extra values at the end, not a renumbering. Any policy
-exported before that date takes 18 inputs and is not loadable against this
-layout — check the ONNX input shape rather than assuming.
+**`yaw_err` changed from a single clamped radian at index 4 to an unclamped
+sin/cos pair at [4]/[5] on 2026-08-10** (renumbering everything from index 4
+onward — a deliberate one-time break from the append-only convention below,
+since this repo's firmware isn't deployed yet and is still ours to redesign
+freely). Any policy exported before this date, or any layout with a single
+scalar at index 4, is a different, incompatible contract — check the ONNX
+input shape and export date, not just the total count.
+
+Why the change: the old `yaw_err` was `wrap_pi(yaw - yaw_ref)`, clamped to
+`+-cmd_yaw_err_clamp_rad` (1.0 rad) by keeping `yaw_ref` itself pinned close to
+true `yaw` via reference anti-windup (mirroring what `pos_ref` still does).
+That clamp did two jobs: kept the observation bounded, and kept the raw
+wrapped error from ever sweeping past `+-pi` and wrapping — a step
+discontinuity in the "which way to turn" signal that measured **100% fall
+rate at a sustained 1.2 rad/s command, versus 20% with the reference pinned**.
+It also had a side effect nobody wanted: because the reference silently
+absorbs drift beyond the clamp, a robot that slowly spun in place during
+station-keeping could show a small, healthy-looking `yaw_err` while its true
+heading had drifted far from where it started — the observation literally
+could not see it.
+
+`sin(yaw - yaw_ref)` / `cos(yaw - yaw_ref)`, computed from the RAW (unwrapped)
+difference, fixes both at once: it is smooth and bounded in `[-1, 1]` for any
+error magnitude, with no wrap point to hit no matter how far `yaw_ref` runs
+ahead of an unachievable command. Because of this, `yaw_ref` no longer needs
+the anti-windup treatment at all — firmware should simply let it integrate
+`w_cmd * dt` every tick, same as before, with no back-calculation step. (It
+should still be periodically re-wrapped to `(-pi, pi]` against ITSELF — not
+against `yaw` — purely so the accumulated radians don't grow to a large float
+over a long-running deployment; this is a no-op on `sin`/`cos` of the
+difference, not a correctness fix.)
+
+This assumes the firmware's `yaw` comes from the BNO085's onboard sensor
+fusion (absolute-ish heading), not raw gyro integration alone — see the sign
+convention note below and confirm this on the bench. If `yaw` is itself
+derived by dead-reckoning gyro integration with no independent correction,
+it carries the same kind of drift `pos_err`'s wheel odometry does, and that
+drift needs to be accounted for the same way (`odometry_scale_range` in sim)
+before trusting this channel over a long run.
+
+**Roll/roll_rate were added 2026-08-04 (18 -> 20 values, now [19]/[20]).**
+They were appended after pitch/pitch_rate rather than grouped next to them so
+that indices 0-17 stayed stable at the time — the convention the yaw change
+above now deliberately breaks from, for the reasons given there.
 
 Sign convention: roll is rotation about the fore/aft axis (leaning sideways),
 positive in the same sense as the sim's `roll_from_projected_gravity`, i.e.
@@ -99,14 +139,17 @@ w_cmd += clamp(w_joy - w_cmd, -4.0f * dt, +4.0f * dt);
 // integrate references:
 pos_ref += v_cmd * dt;              // m
 yaw_ref += w_cmd * dt;              // rad
+yaw_ref = wrap_pi(yaw_ref);         // numerical hygiene only, NOT anti-windup -- see above
 // errors fed to the network:
 pos_err = clamp(x_odom - pos_ref, -0.5f, 0.5f);   // anti-windup for odometry drift
-yaw_err = wrap_pi(yaw - yaw_ref);
+yaw_err_sin = sinf(yaw - yaw_ref);  // RAW difference -- do not wrap_pi() this first
+yaw_err_cos = cosf(yaw - yaw_ref);
 ```
 
 The `pos_err` clamp is essential: it keeps unbounded real-world odometry drift
 from pushing the network out of its training distribution (the old balance
-policy's ~10 s falls came from exactly this failure mode). With zero commands
+policy's ~10 s falls came from exactly this failure mode). `yaw_ref` gets no
+equivalent clamp — see above for why it doesn't need one. With zero commands
 the same terms give station keeping, including on inclines.
 
 ### Action layout (ONNX output `commands`, after built-in tanh scaling)

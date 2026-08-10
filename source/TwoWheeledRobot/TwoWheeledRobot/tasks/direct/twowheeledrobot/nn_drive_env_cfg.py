@@ -72,7 +72,7 @@ DRIVE_TERRAINS_CFG = TerrainGeneratorCfg(
 
 @configclass
 class NNDriveEnvCfg(PureNNBalanceEnvCfg):
-    observation_space: int = 20
+    observation_space: int = 21
     action_space: int = 6
     state_space: int = 0
 
@@ -142,13 +142,14 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # in the observation. False only makes sense with leg_action_mode="fixed",
     # where both blocks are constants; see NNDriveFixedStanceEnvCfg.
     include_cg_obs: bool = True
-    # Divisors for the 20 observation values; see DriveObservationBuilder.
+    # Divisors for the 21 observation values; see DriveObservationBuilder.
     drive_observation_scale: tuple = (
         0.5,  # pos_err (m), clamped to +-cmd_pos_err_clamp_m
         1.0,  # velocity (m/s)
         math.radians(25.0),  # pitch (rad)
         4.0,  # pitch_rate (rad/s)
-        1.5,  # yaw_err (rad)
+        1.0,
+        1.0,  # yaw_err sin/cos (already within [-1, 1])
         4.0,  # yaw_rate (rad/s)
         1.0,  # velocity_cmd (m/s)
         2.0,  # yaw_rate_cmd (rad/s)
@@ -193,10 +194,10 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     cmd_velocity_slew_mps2: float = 1.0
     cmd_yaw_slew_radps2: float = 4.0
     cmd_settle_s: float = 1.0  # zero commands right after reset
-    # Reference anti-windup limits — the reference is back-calculated so it can
-    # never run further than these ahead of the robot. Both must match firmware.
+    # Reference anti-windup limit — pos_ref is back-calculated so it can never
+    # run further than this ahead of the robot. Must match firmware. yaw_ref
+    # does not get the equivalent treatment; see CommandGenerator.step().
     cmd_pos_err_clamp_m: float = 0.5  # anti-windup for odometry drift
-    cmd_yaw_err_clamp_rad: float = 1.0  # keeps yaw_err far from the +-pi wrap
     # Benchmark hooks: forced_command_mode="fixed" pins commands for evaluation.
     forced_command_mode: str = ""
     forced_velocity_cmd_mps: float = 0.0
@@ -275,14 +276,63 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # fight command tracking. 20 cm of creep costs 0.16/step, 0.2 m/s costs 0.16/step.
     rew_hold_velocity: float = 4.0
     rew_hold_position: float = 4.0
+    # True world-frame displacement from the spawn point, gated to hold
+    # episodes only (driving away from spawn on command is correct and must
+    # not be penalized -- this is NOT a replacement for rew_position_far,
+    # which stays reference-relative and driving-agnostic).
+    #
+    # hold_position penalizes pos_err against pos_ref, but
+    # CommandGenerator._apply_reference_anti_windup lets pos_ref permanently
+    # drift to follow the robot whenever the raw reference error exceeds
+    # cmd_pos_err_clamp_m -- by design, so the reference cannot unrealistically
+    # outrun the robot after a disturbance. The side effect: slow terminal
+    # wandering during station-keeping gets absorbed into pos_ref and stays
+    # invisible to hold_position/pos_err, even though scripts/benchmark_nn_drive.py's
+    # ground-truth world_drift_m metric (and the stage benchmark gate that reads
+    # it) sees it. This term reads the same ground-truth root_pos_w vs
+    # spawn_pos_xy so training pressure matches what the gate actually checks.
+    # Never exposed to the policy observation -- a real robot has no
+    # ground-truth world position either, only the same odometry the reward
+    # anti-windup already accounts for.
+    # Reduced from 3.0 -> 1.0 (2026-08-10): the first retrain under this term
+    # collapsed early (Train/mean_reward -80 -> -1268 by iteration 45, only
+    # recovering to +216 by 199, versus a clean plateau near 1000-1150 without
+    # it). This term's max (-3.0 at the clamp) is highly correlated with the
+    # pre-fall moment -- a tumbling robot is drifting AND has bad
+    # attitude/position error simultaneously -- so stacked with the other
+    # already-near-budget terms it plausibly pushed the aggregate worst case
+    # past what falling forfeits (~2.3/step), even though each term alone
+    # stays under that individually (this reward's stated design invariant).
+    # 1.0 matches hold_position/hold_velocity's own cap rather than exceeding
+    # it 3x, since this is a secondary/tie-breaking signal, not the primary
+    # one. Re-derive if training still doesn't clear the world_drift_m gate --
+    # the fix is to raise this gradually with headroom checked against the
+    # aggregate, not to jump back to a value already shown to destabilize.
+    rew_hold_world_drift: float = 1.0
+    hold_world_drift_clamp_m: float = 1.0
+    # No heading equivalent of hold_world_drift: yaw has no anti-windup blind
+    # spot to patch (see CommandGenerator._apply_reference_anti_windup and
+    # DriveObservationBuilder's docstring) — rew_yaw_error below already reads
+    # true drift directly via yaw_err_cos, in every regime, without a separate
+    # hold-gated term.
     hold_velocity_cmd_threshold_mps: float = 0.03
     hold_yaw_rate_cmd_threshold_radps: float = 0.05
+    # 1 - cos(error) instead of a clamped quadratic: bounded in [0, 2] for any
+    # error magnitude BY CONSTRUCTION (periodic, no wrap seam), so there is no
+    # clamp value to pick or accidentally widen. Reduced from 1.0 -> 0.5
+    # (2026-08-10, alongside rew_hold_world_drift's reduction) after a stage-1
+    # retrain collapsed early under the combined change -- see
+    # rew_hold_world_drift's comment for the full diagnosis (individually-
+    # bounded terms stacking past the aggregate fall-forfeit budget). 0.5
+    # matches the OLD clamped term's weight exactly; the new worst case is
+    # 1.0/step (double the old clamped max of 0.5, since 1-cos(pi)=2 versus
+    # the old clamp's max of 1.0 rad^2), still comfortably under the
+    # ~2.3/step reference. Near zero, 1-cos(x) ~= x^2/2, so this now gives a
+    # WEAKER small-error gradient than the old term (half); acceptable since
+    # stage 1 never commands yaw (cmd_stage_yaw_rate_max_radps[0] = 0.0) so
+    # this term barely engages there regardless -- revisit once yaw is
+    # actually being trained and re-tighten if tracking looks too loose.
     rew_yaw_error: float = 0.5
-    # Heading error is wrapped to +-pi, so an unclamped quadratic peaked at
-    # 0.5*pi^2 = 4.9/step — more than the ~2.3/step the robot gives up by
-    # falling, which made diving for the floor the optimal response to a large
-    # heading error. Clamping caps this term at 0.5/step.
-    yaw_error_pen_clamp_rad: float = 1.0
     # Torso attitude: the 5-bar legs can pitch/roll the platform against the
     # chassis lean, so a level platform is achievable even while leaning to
     # balance or climb.
@@ -443,16 +493,17 @@ class NNDriveFixedStanceEnvCfg(NNDriveEnvCfg):
     action_space: int = 2
     leg_action_mode: str = "fixed"
 
-    # 20 -> 12. The 4 CyberGear joint angles and 4 previous CyberGear actions are
-    # constants once the legs are pinned. Indices 0-7 keep their meaning.
-    observation_space: int = 12
+    # 21 -> 13. The 4 CyberGear joint angles and 4 previous CyberGear actions
+    # are constants once the legs are pinned. Indices 0-8 keep their meaning.
+    observation_space: int = 13
     include_cg_obs: bool = False
     drive_observation_scale: tuple = (
         0.5,  # pos_err (m), clamped to +-cmd_pos_err_clamp_m
         1.0,  # velocity (m/s)
         math.radians(25.0),  # pitch (rad)
         4.0,  # pitch_rate (rad/s)
-        1.5,  # yaw_err (rad)
+        1.0,
+        1.0,  # yaw_err sin/cos (already within [-1, 1])
         4.0,  # yaw_rate (rad/s)
         1.0,  # velocity_cmd (m/s)
         2.0,  # yaw_rate_cmd (rad/s)

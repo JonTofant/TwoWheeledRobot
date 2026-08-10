@@ -39,7 +39,15 @@ def newly_created_run(log_root: Path, previous_runs: set[Path], stage: int) -> P
 
 
 def shortlist_checkpoints(run_dir: Path, count: int) -> list[Path]:
-    """Rank saved checkpoints by the matching TensorBoard mean-reward scalar."""
+    """Rank saved checkpoints by the matching TensorBoard mean-reward scalar.
+
+    Raw reward is biased toward standstill policies when
+    cmd_still_episode_prob is high (see nn_drive_env_cfg.py), so a converged
+    driving checkpoint can rank below a standstill-attractor checkpoint on
+    reward alone. The benchmark gate is the real filter; this function's job
+    is only to not withhold a legitimate candidate from it, so the newest
+    checkpoint is always included regardless of its reward rank.
+    """
     try:
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     except ModuleNotFoundError as exc:
@@ -68,7 +76,11 @@ def shortlist_checkpoints(run_dir: Path, count: int) -> list[Path]:
         detail = f"; missing scalar steps for {', '.join(sorted(missing))}" if missing else ""
         raise RuntimeError(f"No checkpoint could be matched to Train/mean_reward in {run_dir}{detail}")
     ranked.sort(reverse=True)
-    return [checkpoint for _, _, checkpoint in ranked[:count]]
+    top_by_reward = [checkpoint for _, _, checkpoint in ranked[:count]]
+    newest = max(run_dir.glob("model_*.pt"), key=checkpoint_iteration, default=None)
+    if newest is not None and newest not in top_by_reward:
+        top_by_reward.append(newest)
+    return top_by_reward
 
 
 def benchmark_checkpoint(

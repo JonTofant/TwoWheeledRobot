@@ -397,12 +397,16 @@ class CommandGenerator:
 
         v_cmd, w_cmd     <- joystick, slew-limited
         pos_ref          += v_cmd * dt          (longitudinal odometry reference, m)
-        yaw_ref          += w_cmd * dt          (heading reference, rad)
+        yaw_ref          += w_cmd * dt          (heading reference, rad), then
+                             re-wrapped to (-pi, pi] -- numerical hygiene only,
+                             mathematically inert (see step())
         pos_err          = clamp(x_odom - pos_ref, +-pos_err_clamp)
-        yaw_err          = wrap(yaw - yaw_ref)
+        yaw_err_sin/cos  = sin/cos(yaw - yaw_ref)
 
     The clamp on ``pos_err`` is the anti-windup that keeps real-world odometry
     drift from pushing the observation out of the training distribution.
+    ``yaw_ref`` does NOT get the equivalent anti-windup treatment -- see
+    ``step()`` and ``yaw_error_sin_cos()`` for why yaw does not need it.
     """
 
     def __init__(self, cfg, num_envs: int, device: torch.device):
@@ -499,33 +503,45 @@ class CommandGenerator:
         self.v_cmd = self.v_cmd + dv
         self.w_cmd = self.w_cmd + dw
         self.pos_ref = self.pos_ref + self.v_cmd * dt
-        self.yaw_ref = self.yaw_ref + self.w_cmd * dt
-        self._apply_reference_anti_windup(x_odom, yaw)
+        # Re-wrap yaw_ref to (-pi, pi] after integrating. This is NOT the
+        # anti-windup position gets (that changes the reference's VALUE based
+        # on the robot's measured state); this is a pure modulo reduction of
+        # yaw_ref against itself, so it never changes sin/cos(yaw - yaw_ref) --
+        # only keeps yaw_ref from growing to an arbitrarily large float over a
+        # long-running deployment (radians accumulate without bound under
+        # sustained turning commands otherwise).
+        self.yaw_ref = wrap_angle_rad(self.yaw_ref + self.w_cmd * dt)
+        self._apply_reference_anti_windup(x_odom)
 
-    def _apply_reference_anti_windup(self, x_odom: torch.Tensor | None, yaw: torch.Tensor | None) -> None:
-        """Back-calculate the references so they can never outrun the robot.
+    def _apply_reference_anti_windup(self, x_odom: torch.Tensor | None) -> None:
+        """Back-calculate pos_ref so it can never outrun the robot.
 
-        ``pos_ref``/``yaw_ref`` integrate the joystick command, but the robot
-        cannot always follow it — the measured yaw-rate ceiling is ~0.75 rad/s
-        against commands up to 2.0 rad/s. Without this, the reference runs away
-        forever: ``pos_err`` pins at its clamp (a permanent, unclearable "you are
-        behind" signal) and ``yaw_err`` sweeps past +-pi and *wraps*, which is a
-        step discontinuity in the observation. Measured effect of the wrap: 100%
-        fall rate at a sustained 1.2 rad/s, versus 20% with the reference pinned.
+        ``pos_ref`` integrates the joystick command, but the robot cannot
+        always follow it. Without this, pos_ref runs away forever: pos_err
+        pins at its clamp, a permanent, unclearable "you are behind" signal
+        with zero gradient back toward zero once past it. This is standard
+        integrator anti-windup by back-calculation.
 
-        This is standard integrator anti-windup by back-calculation, and it is
-        the same job the ``cmd_pos_err_clamp_m`` clamp was doing on the
-        observation — except done at the source, so the error never wraps and
-        the reference stays recoverable.
+        yaw_ref does NOT get the equivalent treatment (removed 2026-08-10).
+        The original version existed for the same two reasons: (1) keep the
+        observation-visible error bounded, and (2) avoid yaw_err sweeping past
+        +-pi and wrapping, which is a step discontinuity that measured 100%
+        fall rate at a sustained 1.2 rad/s command (vs 20% with the reference
+        pinned). Both are now solved at the source instead: yaw_error_sin_cos
+        encodes sin/cos of the RAW (unwrapped) difference, which is smooth and
+        bounded in [-1, 1] for any magnitude of error, with no wrap point to
+        hit regardless of how far yaw_ref runs ahead of an unachievable
+        command. Pinning yaw_ref like pos_ref would reintroduce the exact
+        silent-drift blind spot this replaced (see rew_hold_world_drift's
+        history in nn_drive_env_cfg.py) -- for pitch tracking. Confirm the
+        1.2 rad/s fall-rate result still holds under this encoding before
+        trusting high sustained yaw-rate commands; that number was measured
+        against the old representation, not re-derived for this one.
         """
         if x_odom is not None:
             pos_clamp = self.cfg.cmd_pos_err_clamp_m
             pos_err = x_odom - self.pos_ref
             self.pos_ref = self.pos_ref + (pos_err - pos_err.clamp(-pos_clamp, pos_clamp))
-        if yaw is not None:
-            yaw_clamp = self.cfg.cmd_yaw_err_clamp_rad
-            yaw_err = wrap_angle_rad(yaw - self.yaw_ref)
-            self.yaw_ref = self.yaw_ref + (yaw_err - yaw_err.clamp(-yaw_clamp, yaw_clamp))
 
     def position_error(self, x_odom: torch.Tensor) -> torch.Tensor:
         clamp = self.cfg.cmd_pos_err_clamp_m
@@ -541,37 +557,63 @@ class CommandGenerator:
         """
         return x_odom - self.pos_ref
 
-    def yaw_error(self, yaw: torch.Tensor) -> torch.Tensor:
-        # Anti-windup keeps this within +-cmd_yaw_err_clamp_rad, so the wrap is
-        # never reached; the clamp here makes that guarantee explicit and matches
-        # what the firmware computes.
-        clamp = self.cfg.cmd_yaw_err_clamp_rad
-        return wrap_angle_rad(yaw - self.yaw_ref).clamp(-clamp, clamp)
+    def yaw_error_sin_cos(self, yaw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """sin/cos of the raw (unwrapped) heading error -- see step()'s docstring.
+
+        Deliberately not run through wrap_angle_rad first: sin/cos of any real
+        number is already smooth and periodic, so wrapping first would only
+        reintroduce the discontinuity this representation exists to avoid.
+        """
+        diff = yaw - self.yaw_ref
+        return torch.sin(diff), torch.cos(diff)
 
 
 class DriveObservationBuilder:
-    """Build the 20-value drive observation with fixed normalization.
+    """Build the 21-value drive observation with fixed normalization.
 
     Layout (all values BEFORE dividing by ``drive_observation_scale``):
         [0]  pos_err          m,  clamp +-cmd_pos_err_clamp_m
         [1]  velocity         m/s (wheel odometry mean)
         [2]  pitch            rad
         [3]  pitch_rate       rad/s
-        [4]  yaw_err          rad, wrapped
-        [5]  yaw_rate         rad/s
-        [6]  velocity_cmd     m/s
-        [7]  yaw_rate_cmd     rad/s
-        [8-11]  cg_pos_norm   CyberGear joint angle / 90 deg (fl, fr, bl, br)
-        [12-13] prev wheel current A (left, right)
-        [14-17] prev cg action, tanh-squashed in [-1, 1] (fl, fr, bl, br)
-        [18] roll             rad
-        [19] roll_rate        rad/s
+        [4]  yaw_err_sin      sin(yaw - yaw_ref), raw/unwrapped difference
+        [5]  yaw_err_cos      cos(yaw - yaw_ref), raw/unwrapped difference
+        [6]  yaw_rate         rad/s
+        [7]  velocity_cmd     m/s
+        [8]  yaw_rate_cmd     rad/s
+        [9-12]  cg_pos_norm   CyberGear joint angle / 90 deg (fl, fr, bl, br)
+        [13-14] prev wheel current A (left, right)
+        [15-18] prev cg action, tanh-squashed in [-1, 1] (fl, fr, bl, br)
+        [19] roll             rad
+        [20] roll_rate        rad/s
 
-    Roll and roll_rate are APPENDED rather than grouped next to pitch on
-    purpose: indices 0-17 keep their meaning, so the STM32 firmware change is
-    two added values at the end instead of renumbering fourteen entries.
+    ``yaw_err`` changed from a single clamped radian to an unclamped sin/cos
+    pair 2026-08-10 (renumbering [4] onward -- this repo's firmware is still
+    ours to define, so this trades the previous "indices 0-17 keep their
+    meaning, append only" convention for actually fixing the representation).
+    The old approach clamped yaw_err to +-cmd_yaw_err_clamp_rad via reference
+    anti-windup (CommandGenerator._apply_reference_anti_windup used to handle
+    yaw the same way it still handles position): needed both to keep the
+    observation bounded and to avoid the raw wrapped error sweeping past +-pi,
+    a step discontinuity in the "which way to turn" signal that measured 100%
+    fall rate at a sustained 1.2 rad/s command. sin/cos of the RAW (unwrapped)
+    difference solves both at once -- it is smooth and bounded in [-1, 1] for
+    any error magnitude, with no wrap point to hit regardless of how far
+    yaw_ref runs ahead of an unachievable command -- so the anti-windup on
+    yaw_ref was removed rather than reused for a heading-drift patch. Unlike
+    pos_err (which stays reward-only for world drift -- position is unbounded
+    AND has no absolute real-world sensor, only drifting wheel odometry), yaw
+    needed neither a clamp nor a privileged-reward workaround once encoded
+    this way: it is bounded by construction (periodic) and, on this robot's
+    BNO085, an actually measurable quantity, not a dead-reckoned one. yaw
+    itself carries no simulated noise/bias (see _get_observations), matching a
+    fused-IMU heading rather than raw gyro integration.
 
-    They were added 2026-08-04. Before that the reward penalized roll at
+    Roll and roll_rate ([19]/[20]) were added 2026-08-04, appended after
+    pitch/pitch_rate rather than grouped next to them so the firmware change
+    was two extra values rather than a renumbering -- the convention the yaw
+    change above deliberately breaks from, for reasons explained there. Before
+    roll/roll_rate existed the reward penalized roll at
     rew_roll = 12.0 -- the heaviest weight in the config -- while roll was
     absent from this vector, so the policy was taxed on a quantity it could not
     sense while holding four leg actuators that directly control it. Measured
@@ -594,7 +636,8 @@ class DriveObservationBuilder:
         velocity: torch.Tensor,
         pitch: torch.Tensor,
         pitch_rate: torch.Tensor,
-        yaw_err: torch.Tensor,
+        yaw_err_sin: torch.Tensor,
+        yaw_err_cos: torch.Tensor,
         yaw_rate: torch.Tensor,
         velocity_cmd: torch.Tensor,
         yaw_rate_cmd: torch.Tensor,
@@ -605,13 +648,14 @@ class DriveObservationBuilder:
         roll_rate: torch.Tensor,
     ) -> torch.Tensor:
         scalars = torch.stack(
-            [pos_err, velocity, pitch, pitch_rate, yaw_err, yaw_rate, velocity_cmd, yaw_rate_cmd], dim=1
+            [pos_err, velocity, pitch, pitch_rate, yaw_err_sin, yaw_err_cos, yaw_rate, velocity_cmd, yaw_rate_cmd],
+            dim=1,
         )
         attitude = torch.stack([roll, roll_rate], dim=1)
         # With the legs pinned, cg_pos_norm and previous_cg_action are constants
         # (the fixed stance mapped back through the same path), so they are eight
-        # dead inputs. Dropping them takes the vector 20 -> 12 without disturbing
-        # indices 0-7, which keep their firmware meaning either way.
+        # dead inputs. Dropping them takes the vector 21 -> 13 without disturbing
+        # indices 0-8, which keep their firmware meaning either way.
         if self.cfg.include_cg_obs:
             blocks = [scalars, cg_pos_norm, previous_current, previous_cg_action, attitude]
         else:
@@ -741,7 +785,7 @@ class DriveReward:
         pitch_rate: torch.Tensor,
         roll: torch.Tensor,
         roll_rate: torch.Tensor,
-        yaw_err: torch.Tensor,
+        yaw_err_cos: torch.Tensor,
         yaw_rate: torch.Tensor,
         velocity_cmd: torch.Tensor,
         yaw_rate_cmd: torch.Tensor,
@@ -749,6 +793,7 @@ class DriveReward:
         delta_current: torch.Tensor,
         cg_target_angle: torch.Tensor,
         cg_delta_target_angle: torch.Tensor,
+        world_drift: torch.Tensor,
         terminal_penalty: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # The policy only ever sees pos_err clamped to +-cmd_pos_err_clamp_m; the
@@ -766,7 +811,9 @@ class DriveReward:
         # the optimal policy. The wrapped yaw error was the live example: at
         # +-pi it cost 0.5*pi^2 = 4.9/step, roughly double the 2.3/step the robot
         # gives up by falling, and turn-in-place benchmarks fell 98% of the time.
-        yaw_err_pen = yaw_err.clamp(-self.cfg.yaw_error_pen_clamp_rad, self.cfg.yaw_error_pen_clamp_rad)
+        # yaw_error below is now 1-cos(diff) instead of a clamped square: it is
+        # bounded in [0, 2] BY CONSTRUCTION for any error magnitude, so there is
+        # no clamp value to pick or re-derive if a weight moves.
         rate_clamp = self.cfg.attitude_rate_pen_clamp_radps
         pitch_rate_pen = pitch_rate.clamp(-rate_clamp, rate_clamp)
         roll_rate_pen = roll_rate.clamp(-rate_clamp, rate_clamp)
@@ -800,7 +847,15 @@ class DriveReward:
             "position_far": -self.cfg.rew_position_far * pos_far,
             "hold_velocity": -self.cfg.rew_hold_velocity * hold * hold_velocity.pow(2),
             "hold_position": -self.cfg.rew_hold_position * hold * pos_err.pow(2),
-            "yaw_error": -self.cfg.rew_yaw_error * yaw_err_pen.pow(2),
+            # Ground-truth world drift, not the anti-windup-mutable reference
+            # error -- see rew_hold_world_drift in nn_drive_env_cfg.py.
+            "hold_world_drift": -self.cfg.rew_hold_world_drift
+            * hold
+            * world_drift.clamp(0.0, self.cfg.hold_world_drift_clamp_m).pow(2),
+            # No hold_world_heading_drift term: yaw_error below already reads
+            # yaw_ref without anti-windup, so it has no blind spot to patch in
+            # the first place (see CommandGenerator._apply_reference_anti_windup).
+            "yaw_error": -self.cfg.rew_yaw_error * (1.0 - yaw_err_cos),
             "pitch": -self.cfg.rew_pitch * pitch_excess.pow(2),
             "pitch_rate": -self.cfg.rew_pitch_rate * pitch_rate_pen.pow(2),
             # Quadratic + linear on the band excess. The quadratic alone has

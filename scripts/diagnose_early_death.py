@@ -86,6 +86,7 @@ def _draws(unwrapped) -> dict[str, torch.Tensor]:
     stiffness = unwrapped.robot.data.joint_stiffness
     damping = unwrapped.robot.data.joint_damping
     cg_cols = [unwrapped._cg_fl_ids[0], unwrapped._cg_fr_ids[0], unwrapped._cg_bl_ids[0], unwrapped._cg_br_ids[0]]
+    wheel_cols = [unwrapped._left_wheel_ids[0], unwrapped._right_wheel_ids[0]]
 
     out = {
         "com_offset_y_m": com_delta[:, 1],
@@ -109,6 +110,7 @@ def _draws(unwrapped) -> dict[str, torch.Tensor]:
         "action_delay_samples": proc.action_delay_samples.float(),
         "cg_kp_mean": stiffness[:, cg_cols].mean(dim=1),
         "cg_kd_mean": damping[:, cg_cols].mean(dim=1),
+        "wheel_damping_mean": damping[:, wheel_cols].mean(dim=1),
         "cg_calib_bias_absmax_deg": (cg.calib_bias.abs().max(dim=1).values) * 180.0 / math.pi,
     }
     return {k: v.detach().float().clone() for k, v in out.items()}
@@ -170,6 +172,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs = obs["policy"]
 
         draws = _draws(unwrapped)
+        wd = draws["wheel_damping_mean"]
+        print(f"\n[wheel_damping_mean post-reset] mean={wd.mean():.5f} min={wd.min():.5f} max={wd.max():.5f} "
+              f"(expected range {unwrapped.cfg.wheel_viscous_damping_range})")
         # Spawn attitude/velocity are not stored on the env, so read them from
         # live state at t=0 rather than from the (unsaved) reset draw.
         x_rel_0, velocity_0, pitch_0, _, _, _ = unwrapped._state_terms()

@@ -218,7 +218,11 @@ class NNDriveEnv(PureNNBalanceEnv):
         velocity = 0.5 * raw_wheel_vel.sum(dim=1) * R_WHEEL
         pitch = pitch_from_projected_gravity(self.bno080.data.projected_gravity_b)
         pitch_rate = -self.bno080.data.ang_vel_b[:, 0]
-        yaw_error = self._commands.yaw_error(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
+        # Kept as a single wrapped scalar for callers that just want "how far
+        # off," reconstructed from the same sin/cos pair _get_observations()/
+        # _get_rewards() use directly (see CommandGenerator.yaw_error_sin_cos).
+        yaw_err_sin, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
+        yaw_error = torch.atan2(yaw_err_sin, yaw_err_cos)
         yaw_rate = self.robot.data.root_ang_vel_w[:, 2]
         return x_rel, velocity, pitch, pitch_rate, yaw_error, yaw_rate
 
@@ -252,7 +256,14 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
         self._wheel_velocity_used = self._wheel_velocity_raw.clone()
-        self._wheel_omega_for_limiter = self._wheel_velocity_used.abs()
+        # Back-EMF only derates torque that does positive work against rotation
+        # (motoring). Torque opposing rotation (braking — exactly what a
+        # recovery controller needs near top speed) is current/thermal limited,
+        # not back-EMF limited, so it must not be derated by |omega| here.
+        same_sign = (self._wheel_tau_current * self._wheel_velocity_used) >= 0.0
+        self._wheel_omega_for_limiter = torch.where(
+            same_sign, self._wheel_velocity_used.abs(), torch.zeros_like(self._wheel_velocity_used)
+        )
         self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
         self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
         self._wheel_torque_cmd = torch.maximum(
@@ -309,12 +320,19 @@ class NNDriveEnv(PureNNBalanceEnv):
         cg_pos = cg_pos + torch.randn_like(cg_pos) * self.cfg.noise_cg_pos_std
         cg_pos_norm = cg_pos / self.cfg.cg_position_scale_rad
 
+        # No simulated noise/bias on the underlying yaw (matching a fused-IMU
+        # heading, not raw gyro integration — see DriveObservationBuilder's
+        # docstring). Sin/cos of the raw, unwrapped difference: bounded and
+        # smooth for any error magnitude, no anti-windup needed on yaw_ref.
+        yaw_err_sin, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
+
         self._obs_now = self._drive_obs_builder.build(
             pos_err_m,
             velocity_m,
             pitch_m,
             pitch_rate_m,
-            yaw_error,
+            yaw_err_sin,
+            yaw_err_cos,
             yaw_rate_m,
             self._commands.v_cmd,
             self._commands.w_cmd,
@@ -339,6 +357,15 @@ class NNDriveEnv(PureNNBalanceEnv):
         # past the clamp; the observation stays clamped for firmware parity.
         pos_err_raw = self._commands.position_error_raw(x_rel)
         pos_err = pos_err_raw.clamp(-self.cfg.cmd_pos_err_clamp_m, self.cfg.cmd_pos_err_clamp_m)
+        # Ground truth, immune to the reference anti-windup absorbing drift
+        # (see rew_hold_world_drift). Never fed to the observation -- a real
+        # robot has no ground-truth world position either.
+        world_drift = torch.linalg.vector_norm(
+            self.robot.data.root_pos_w[:, :2] - self._spawn_pos_xy, dim=1
+        )
+        # yaw_err_cos alone is enough for the 1-cos(error) reward shape (an
+        # even function of the error -- sign doesn't matter for "how far off").
+        _, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
         reward, components = self._drive_reward.compute(
             pos_err_raw,
             velocity,
@@ -346,7 +373,7 @@ class NNDriveEnv(PureNNBalanceEnv):
             pitch_rate,
             roll,
             roll_rate,
-            yaw_error,
+            yaw_err_cos,
             yaw_rate,
             self._commands.v_cmd,
             self._commands.w_cmd,
@@ -354,6 +381,7 @@ class NNDriveEnv(PureNNBalanceEnv):
             self._action_processor.delta_current(),
             self._cg_processor.target_angle,
             self._cg_processor.delta_target_angle(),
+            world_drift,
             self._last_terminal_penalty,
         )
         # Per-env components kept for scripts/verify_contact_and_reward.py, which
@@ -485,6 +513,14 @@ class NNDriveEnv(PureNNBalanceEnv):
         damping = self._default_joint_damping[env_ids_cpu].clone().to(self.device)
         stiffness[:, cg_cols] = torch.empty(n, 4, device=self.device).uniform_(*self.cfg.cg_kp_range)
         damping[:, cg_cols] = torch.empty(n, 4, device=self.device).uniform_(*self.cfg.cg_kd_range)
+        # `damping` was re-cloned from the static per-joint default above, which
+        # would otherwise silently overwrite the wheel columns' per-episode
+        # viscous-damping randomization already written by
+        # PureNNBalanceEnv._apply_pure_nn_physical_randomization earlier this
+        # reset. Splice the already-sampled wheel damping back in before writing.
+        if self.cfg.wheel_viscous_damping_randomization_active:
+            wheel_cols = [self._left_wheel_ids[0], self._right_wheel_ids[0]]
+            damping[:, wheel_cols] = self._sampled_wheel_viscous_damping[env_ids_t]
         self.robot.write_joint_stiffness_to_sim(stiffness, env_ids=env_ids_cpu)
         self.robot.write_joint_damping_to_sim(damping, env_ids=env_ids_cpu)
 
