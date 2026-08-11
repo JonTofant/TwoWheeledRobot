@@ -1,0 +1,6 @@
+| Run | Fall rate | RMS vel. error (m/s) | RMS yaw-rate error (rad/s) | World drift (m) | RMS pitch (deg) |
+|---|---|---|---|---|---|
+| A: baseline, stress-tested (range DR) | 0.0213 | 0.1342 | 0.0774 | 2.1170 | 2.4805 |
+| A: baseline, home turf (nominal DR) | 0.0142 | 0.1315 | 0.0752 | 2.1287 | 2.5047 |
+| B: proposed 1, range DR + MLP | 0.0170 | 0.1568 | 0.0734 | 1.8316 | 1.9440 |
+| C: proposed 2, range DR + GRU | 0.0071 | 0.0930 | 0.0898 | 2.1966 | 1.7913 |
