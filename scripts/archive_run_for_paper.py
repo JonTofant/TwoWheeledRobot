@@ -53,6 +53,28 @@ def latest_numbered_checkpoint(run_dir: Path) -> Path | None:
     return best_path
 
 
+def representative_checkpoint(run_dir: Path) -> Path | None:
+    """The checkpoint selected_checkpoint.json actually selected, if present.
+
+    Training keeps saving checkpoints after shortlisting/selection runs, so
+    the highest iteration number on disk is not necessarily the one that was
+    selected (e.g. under --allow-gate-failure's best-scoring fallback) or
+    exported -- only selected_checkpoint.json records that. Falls back to the
+    latest numbered checkpoint for runs with no manifest (e.g. plain
+    scripts/rsl_rl/train.py invocations, not the gated curriculum wrapper).
+    """
+    import json
+
+    manifest = run_dir / "selected_checkpoint.json"
+    if manifest.is_file():
+        selected = json.loads(manifest.read_text(encoding="utf-8")).get("selected_checkpoint")
+        if selected:
+            path = run_dir / selected
+            if path.is_file():
+                return path
+    return latest_numbered_checkpoint(run_dir)
+
+
 def archive_run(run_dir: Path, dest_dir: Path) -> list[str]:
     if not run_dir.is_dir():
         raise FileNotFoundError(f"Not a directory: {run_dir}")
@@ -79,7 +101,7 @@ def archive_run(run_dir: Path, dest_dir: Path) -> list[str]:
             shutil.copytree(src, dst)
             copied.append(name + "/")
 
-    final_ckpt = latest_numbered_checkpoint(run_dir)
+    final_ckpt = representative_checkpoint(run_dir)
     if final_ckpt is not None:
         shutil.copy2(final_ckpt, dest_dir / final_ckpt.name)
         copied.append(final_ckpt.name)

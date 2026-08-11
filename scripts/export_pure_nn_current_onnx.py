@@ -62,15 +62,23 @@ def append_deployment_output(
     cg_lower_rad: list[float],
     cg_upper_rad: list[float],
     output_name: str,
-) -> None:
+) -> bool:
+    """Returns True if the source graph was recurrent (h_out passed through unchanged)."""
     import numpy as np
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
     model = onnx.load(str(actor_onnx_path))
     graph = model.graph
-    if len(graph.output) != 1:
-        raise SystemExit(f"Expected one actor output in {actor_onnx_path}, found {len(graph.output)}")
+    # Isaac Lab's exporter (isaaclab_rl/rsl_rl/exporter.py::_OnnxPolicyExporter)
+    # emits ["actions"] for a plain ActorCritic, ["actions", "h_out"] for GRU, or
+    # ["actions", "h_out", "c_out"] for LSTM -- the action is always output[0],
+    # any remaining outputs are recurrent state the caller must thread back in
+    # as the next call's h_in/c_in input and are otherwise untouched here (this
+    # deployment contract only transforms the action).
+    if len(graph.output) not in (1, 2, 3):
+        raise SystemExit(f"Expected 1-3 actor outputs in {actor_onnx_path}, found {len(graph.output)}")
+    is_recurrent = len(graph.output) > 1
 
     actor_output = graph.output[0]
     actor_output_name = actor_output.name
@@ -140,11 +148,17 @@ def append_deployment_output(
     output_type = actor_output.type.tensor_type
     new_output = helper.make_tensor_value_info(output_name, TensorProto.FLOAT, None)
     new_output.type.tensor_type.shape.CopyFrom(output_type.shape)
-    graph.output.remove(actor_output)
+    # Replace output[0] (the raw action) with the transformed one IN PLACE,
+    # so recurrent state outputs (h_out, [c_out]) keep their original trailing
+    # order instead of getting shuffled behind it by a remove()+append().
+    recurrent_state_outputs = list(graph.output)[1:]
+    del graph.output[:]
     graph.output.append(new_output)
+    graph.output.extend(recurrent_state_outputs)
     onnx.checker.check_model(model)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     onnx.save(model, str(output_path))
+    return is_recurrent
 
 
 def validate(
@@ -170,15 +184,50 @@ def validate(
 
     torch_policy = torch.jit.load(str(torchscript_path), map_location="cpu").eval()
     obs = torch.randn(samples, obs_dim, dtype=torch.float32).clamp(-3.0, 3.0)
-    with torch.inference_mode():
-        torch_out = _deployment_output(torch_policy(obs), cg_outputs, i_max_a, cg_lower_rad, cg_upper_rad).cpu().numpy()
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
+    obs_np = obs.cpu().numpy().astype(np.float32)
     # Isaac Lab's ONNX actor export uses dynamic_axes={}, so the graph's batch
     # dimension is fixed at 1 (from the traced dummy input) — run one sample
     # at a time rather than as a single batched call.
-    obs_np = obs.cpu().numpy().astype(np.float32)
-    onnx_out = np.concatenate([session.run(None, {input_name: obs_np[i : i + 1]})[0] for i in range(samples)], axis=0)
+    num_recurrent_inputs = len(session.get_inputs()) - 1
+    if num_recurrent_inputs == 0:
+        with torch.inference_mode():
+            torch_out = (
+                _deployment_output(torch_policy(obs), cg_outputs, i_max_a, cg_lower_rad, cg_upper_rad).cpu().numpy()
+            )
+        input_name = session.get_inputs()[0].name
+        onnx_out = np.concatenate(
+            [session.run(None, {input_name: obs_np[i : i + 1]})[0] for i in range(samples)], axis=0
+        )
+    else:
+        # Recurrent: the TorchScript export keeps hidden state as an internal
+        # buffer (single-argument forward(x), reset() zeros it), while the
+        # ONNX export is functional (explicit h_in -> (actions, h_out), same
+        # for c_in/c_out on LSTM) -- see isaaclab_rl/rsl_rl/exporter.py's
+        # _TorchPolicyExporter vs _OnnxPolicyExporter. Comparable only if both
+        # start from a zeroed state and see the same observation sequence in
+        # the same order, so this steps through samples one at a time instead
+        # of validating them independently.
+        if hasattr(torch_policy, "reset"):
+            torch_policy.reset()
+        onnx_input_names = [inp.name for inp in session.get_inputs()]
+        state = [np.zeros(inp.shape, dtype=np.float32) for inp in session.get_inputs()[1:]]
+        torch_steps, onnx_steps = [], []
+        with torch.inference_mode():
+            for i in range(samples):
+                torch_steps.append(
+                    _deployment_output(
+                        torch_policy(obs[i : i + 1]), cg_outputs, i_max_a, cg_lower_rad, cg_upper_rad
+                    )
+                    .cpu()
+                    .numpy()
+                )
+                feeds = dict(zip(onnx_input_names, [obs_np[i : i + 1], *state]))
+                outputs = session.run(None, feeds)
+                onnx_steps.append(outputs[0])
+                state = list(outputs[1:])
+        torch_out = np.concatenate(torch_steps, axis=0)
+        onnx_out = np.concatenate(onnx_steps, axis=0)
     max_error = float(np.max(np.abs(torch_out - onnx_out)))
     if max_error >= tolerance:
         raise SystemExit(f"ONNX validation failed: max_error={max_error:.8g} >= {tolerance:.8g}")
@@ -237,7 +286,7 @@ def main() -> None:
         parser.error("--cg-outputs must be 0 for balance or 4 for NNDrive")
 
     output_name = "commands" if args.cg_outputs > 0 else "current_a"
-    append_deployment_output(
+    is_recurrent = append_deployment_output(
         actor_onnx,
         args.output,
         args.cg_outputs,
@@ -247,8 +296,9 @@ def main() -> None:
         output_name,
     )
     output_count = args.cg_outputs + 2
+    recurrent_note = " + recurrent state (h_out[, c_out]) passed through unchanged" if is_recurrent else ""
     print(
-        f"Exported {args.output} (outputs={output_count}, cg_lower_rad={args.cg_lower_rad}, "
+        f"Exported {args.output} (outputs={output_count}{recurrent_note}, cg_lower_rad={args.cg_lower_rad}, "
         f"cg_upper_rad={args.cg_upper_rad}, i_max_a={args.i_max_a})"
     )
     try:
