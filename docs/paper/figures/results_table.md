@@ -1,6 +1,8 @@
+Aggregated over 3 seed(s): 42, 43, 44
+
 | Run | Fall rate | RMS vel. error (m/s) | RMS yaw-rate error (rad/s) | World drift (m) | RMS pitch (deg) |
 |---|---|---|---|---|---|
-| A: baseline, stress-tested (range DR) | 0.0213 | 0.1342 | 0.0774 | 2.1170 | 2.4805 |
-| A: baseline, home turf (nominal DR) | 0.0142 | 0.1315 | 0.0752 | 2.1287 | 2.5047 |
-| B: proposed 1, range DR + MLP | 0.0170 | 0.1568 | 0.0734 | 1.8316 | 1.9440 |
-| C: proposed 2, range DR + GRU | 0.0071 | 0.0930 | 0.0898 | 2.1966 | 1.7913 |
+| A: baseline, stress-tested (range DR) | 0.0497 ± 0.0271 | 0.1161 ± 0.0173 | 0.0766 ± 0.0035 | 2.0970 ± 0.0863 | 2.1370 ± 0.3024 |
+| A: baseline, home turf (nominal DR) | 0.0398 ± 0.0225 | 0.1137 ± 0.0173 | 0.0748 ± 0.0035 | 2.1206 ± 0.0601 | 2.1581 ± 0.3034 |
+| B: proposed 1, range DR + MLP | 0.0455 ± 0.0256 | 0.1364 ± 0.0251 | 0.0795 ± 0.0053 | 2.1834 ± 0.3239 | 2.0295 ± 0.0808 |
+| C: proposed 2, range DR + GRU | 0.0090 ± 0.0033 | 0.0941 ± 0.0037 | 0.0741 ± 0.0136 | 2.3398 ± 0.1257 | 1.8619 ± 0.0745 |

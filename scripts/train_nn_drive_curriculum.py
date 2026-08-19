@@ -14,12 +14,14 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from nn_drive_benchmark_contract import STAGE_GATE_SCENARIOS, checkpoint_score, stage_gate_failures
 
 STAGE_TERRAIN = {1: "flat", 2: "flat", 3: "flat", 4: "generator", 5: "generator"}
 SELECTION_MANIFEST = "selected_checkpoint.json"
+BENCHMARK_LAUNCH_ATTEMPTS = 3
 # (obs_dim, cg_outputs) per task -- must track NNDriveEnvCfg/NNDriveFixedStanceEnvCfg's
 # observation_space and action_space (4 CyberGear + 2 wheel vs. 2 wheel only).
 # obs_dim went 20/12 -> 21/13 2026-08-10 (yaw_err sin/cos replacing a single clamped radian).
@@ -134,7 +136,25 @@ def benchmark_checkpoint(
     # quality failure but is actually just a config mismatch.
     cmd.extend(env_overrides)
     print(" ".join(cmd))
-    subprocess.run(cmd, cwd=repo, check=True)
+    # Kit occasionally SIGSEGVs during startup, before the sim loads at all
+    # (observed 2026-08-14 in XOpenDisplay/libxcb, with three identical
+    # launches either side of it succeeding). One lost launch aborts the whole
+    # curriculum and discards a four-hour arm, so retry. This cannot mask a
+    # real regression: the benchmark is seeded and deterministic, so a retry
+    # re-runs the identical measurement rather than resampling until it passes,
+    # and a checkpoint that genuinely fails its gate still fails it.
+    for attempt in range(1, BENCHMARK_LAUNCH_ATTEMPTS + 1):
+        completed = subprocess.run(cmd, cwd=repo)
+        if completed.returncode == 0:
+            break
+        print(
+            f"Benchmark launch for {checkpoint.name} failed with exit {completed.returncode} "
+            f"(attempt {attempt}/{BENCHMARK_LAUNCH_ATTEMPTS})",
+            flush=True,
+        )
+        if attempt == BENCHMARK_LAUNCH_ATTEMPTS:
+            raise subprocess.CalledProcessError(completed.returncode, cmd)
+        time.sleep(30)
     return json.loads(output.read_text(encoding="utf-8"))
 
 
