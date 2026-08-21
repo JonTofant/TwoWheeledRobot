@@ -34,6 +34,7 @@ from .pure_nn_components import (
     CyberGearStanceProcessor,
     DriveObservationBuilder,
     DriveReward,
+    SteadinessTracker,
     pitch_from_projected_gravity,
     roll_from_projected_gravity,
     yaw_from_quat_wxyz,
@@ -90,6 +91,12 @@ class NNDriveEnv(PureNNBalanceEnv):
 
         # Continuous force-noise state (filtered white noise on the platform).
         self._force_noise = torch.zeros(self.num_envs, 2, device=self.device)
+        # High-pass references for the station-keeping steadiness terms. Two
+        # trackers rather than one 3-wide tracker: pitch and the wheel actions
+        # are unrelated quantities that happen to share a time constant, and a
+        # single buffer would invite reusing one's residual for the other.
+        self._pitch_ac_tracker = SteadinessTracker(self.num_envs, 1, self.device, self.cfg.hold_ac_tau_s)
+        self._action_ac_tracker = SteadinessTracker(self.num_envs, 2, self.device, self.cfg.hold_ac_tau_s)
         self._force_noise_amp = torch.zeros(self.num_envs, device=self.device)
 
         # Physical-property randomization baselines (CPU tensors, PhysX API).
@@ -366,6 +373,20 @@ class NNDriveEnv(PureNNBalanceEnv):
         # yaw_err_cos alone is enough for the 1-cos(error) reward shape (an
         # even function of the error -- sign doesn't matter for "how far off").
         _, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
+        # Advance the high-pass references once per control step, here rather
+        # than in _pre_physics_step, so the EMA state is updated exactly where
+        # its residual is consumed. Pitch is the TRUE pitch the reward already
+        # reads -- the residual removes the DC mounting bias by construction,
+        # so there is nothing for the biased observation copy to contribute.
+        pitch_ac = self._pitch_ac_tracker.update(pitch.unsqueeze(1), self.step_dt).squeeze(1)
+        # net_current is tanh(action) * i_max_a, i.e. the policy's own commanded
+        # intent before this episode's motor gain/deadzone/bias draw. Dividing
+        # it back out gives tanh units. Deliberately NOT command_current: that
+        # carries the randomized motor response, and charging the policy for
+        # smoothness it did not cause would make the term a lottery on the draw.
+        action_ac = self._action_ac_tracker.update(
+            self._wheel_i_des / self.cfg.i_max_a, self.step_dt
+        )
         reward, components = self._drive_reward.compute(
             pos_err_raw,
             velocity,
@@ -382,6 +403,8 @@ class NNDriveEnv(PureNNBalanceEnv):
             self._cg_processor.target_angle,
             self._cg_processor.delta_target_angle(),
             world_drift,
+            pitch_ac,
+            action_ac,
             self._last_terminal_penalty,
         )
         # Per-env components kept for scripts/verify_contact_and_reward.py, which
@@ -407,6 +430,14 @@ class NNDriveEnv(PureNNBalanceEnv):
             "pos_err_raw_abs": pos_err_raw.abs().mean(),
             "hold_pos_err_abs": self._masked_mean(pos_err_raw.abs(), hold_mask),
             "hold_velocity_abs": self._masked_mean(velocity.abs(), hold_mask),
+            # The quantity this experiment exists to reduce. Reward components
+            # move for many reasons (a weight change, a different hold fraction);
+            # this is the behaviour itself, in the same degrees the hardware
+            # capture reports, so a run can be compared straight against the
+            # 1.89 deg the deployed GRU holds. Hold-masked: the AC residual is
+            # meaningless while a velocity command is legitimately swinging pitch.
+            "hold_pitch_ac_deg": self._masked_mean(pitch_ac.abs(), hold_mask) * 180.0 / math.pi,
+            "hold_action_ac_abs": self._masked_mean(action_ac.abs().mean(dim=1), hold_mask),
             "yaw_error_abs": yaw_error.abs().mean(),
             "v_cmd_abs": self._commands.v_cmd.abs().mean(),
             "w_cmd_abs": self._commands.w_cmd.abs().mean(),
@@ -499,6 +530,11 @@ class NNDriveEnv(PureNNBalanceEnv):
             *self.cfg.roll_rate_bias_radps_range
         )
         self._force_noise[env_ids_t] = 0.0
+        # Reset (not zero) the steadiness references: SteadinessTracker re-seeds
+        # from the first post-reset sample, so a fresh episode's spawn attitude
+        # is not read as a step change away from the previous episode's mean.
+        self._pitch_ac_tracker.reset(env_ids_t)
+        self._action_ac_tracker.reset(env_ids_t)
         self._force_noise_amp[env_ids_t] = torch.empty(n, device=self.device).uniform_(
             *self.cfg.force_noise_amp_n_range
         )

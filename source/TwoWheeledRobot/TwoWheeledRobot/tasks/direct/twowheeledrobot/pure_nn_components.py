@@ -744,6 +744,64 @@ class CyberGearStanceProcessor:
         return self.target_angle - self.prev_target_angle
 
 
+class SteadinessTracker:
+    """Exponential-moving-average reference for the AC (oscillating) part of a signal.
+
+    Motivated by measured hardware, not by simulation. The deployed range+GRU
+    policy holds a clean **0.83 Hz limit cycle** while station-keeping: pitch and
+    forward velocity peak at the same frequency (one coupled rocking mode), +-2 deg
+    and +-0.1 m/s, and the robot wanders 0.52 m over a 17 s hold
+    (TwoWheeledRobot_Embedded, Results/paper/range_gru_segmented.csv, idle stage).
+    Replaying that trajectory through DriveReward's weights shows why nothing
+    suppressed it -- the whole oscillation costs about 0.07/step against a
+    1.0/step alive bonus:
+
+      * ``rew_pitch`` charges 0.0007/step. Its ``pitch_flat_deg = 3.0`` deadband
+        is *wider than the oscillation*, so 75% of the samples sit in the
+        zero-gradient region and the swing is very nearly free.
+      * ``rew_delta_current`` charges 0.0020/step. It penalizes the step-to-step
+        action change at the 66.7 Hz control rate, and one 15 ms step of a 1.2 s
+        period moves the action by well under 1% of its amplitude. It is a
+        chatter term measuring at the wrong timescale entirely.
+
+    Subtracting an EMA is a first-order high-pass: with ``tau = 0.7 s`` the corner
+    sits at 0.23 Hz, so a DC offset is removed completely while the measured
+    0.83 Hz component passes at ~0.96 gain. That is the property the deadband
+    argument actually needs. The deadband exists because the reward reads true
+    pitch while the policy observes a copy carrying a per-episode +-3 deg IMU
+    mounting bias, so demanding an exact angle trains a precision the hardware
+    cannot deliver -- but a mounting bias is a *constant*, and this residual
+    cancels constants by construction. Penalising it therefore asks only that
+    the robot stop moving back and forth, which is measurable on any IMU
+    regardless of how it is bolted on, and leaves the deadband intact for the
+    absolute-angle term it was designed for.
+    """
+
+    def __init__(self, num_envs: int, width: int, device, tau_s: float):
+        self._ema = torch.zeros(num_envs, width, device=device)
+        self._primed = torch.zeros(num_envs, 1, device=device)
+        self.tau_s = tau_s
+
+    def update(self, value: torch.Tensor, step_dt: float) -> torch.Tensor:
+        """Advance the EMA and return this step's AC residual (value - EMA).
+
+        The EMA is seeded with the first post-reset sample rather than with zero.
+        Decaying up from zero would report a large spurious residual for the
+        first few tenths of a second of every episode -- a reset transient, not
+        an oscillation -- and with short episodes that artefact would be a
+        significant fraction of the training signal.
+        """
+        alpha = math.exp(-step_dt / max(self.tau_s, step_dt))
+        seeded = self._primed * self._ema + (1.0 - self._primed) * value
+        self._ema = alpha * seeded + (1.0 - alpha) * value
+        self._primed = torch.ones_like(self._primed)
+        return value - seeded
+
+    def reset(self, env_ids: torch.Tensor) -> None:
+        self._ema[env_ids] = 0.0
+        self._primed[env_ids] = 0.0
+
+
 class DriveReward:
     """Command-tracking reward for the NN drive task.
 
@@ -794,6 +852,8 @@ class DriveReward:
         cg_target_angle: torch.Tensor,
         cg_delta_target_angle: torch.Tensor,
         world_drift: torch.Tensor,
+        pitch_ac: torch.Tensor,
+        action_ac: torch.Tensor,
         terminal_penalty: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         # The policy only ever sees pos_err clamped to +-cmd_pos_err_clamp_m; the
@@ -852,6 +912,46 @@ class DriveReward:
             "hold_world_drift": -self.cfg.rew_hold_world_drift
             * hold
             * world_drift.clamp(0.0, self.cfg.hold_world_drift_clamp_m).pow(2),
+            # ---- Station-keeping steadiness (2026-08-21) --------------------
+            # Three terms against one measured failure: the deployed range+GRU
+            # policy holds a 0.83 Hz pitch/velocity limit cycle while standing
+            # still, which the reward above charges ~0.07/step for. See
+            # SteadinessTracker for the measurement and the per-term autopsy.
+            #
+            # All three are hold-gated. Pitch legitimately swings while
+            # accelerating -- leaning IS how this robot drives -- so an
+            # always-on steadiness term would be taxing the correct behaviour.
+            # "Smooth while driving" is a separate question from "still while
+            # still", and only the second one is what the hardware runs failed.
+            #
+            # Two are bounded non-negative BONUSES, so they cannot make falling
+            # attractive no matter how they are weighted -- the failure mode
+            # rew_hold_world_drift's comment documents (individually-bounded
+            # penalties stacking past the ~2.3/step a fall forfeits) is
+            # unreachable by construction here, which is why the pitch signal
+            # is shaped as a bonus rather than as the obvious penalty.
+            #
+            # Exp kernels for the same reason vel_track uses one: they are the
+            # small-error discriminators. The existing quadratics (hold_velocity)
+            # are steepest at large error and nearly flat at the last few cm/s,
+            # which is precisely the regime "hold still" lives in.
+            "hold_pitch_steady": self.cfg.rew_hold_pitch_steady
+            * hold
+            * torch.exp(-pitch_ac.pow(2) / math.radians(self.cfg.hold_pitch_ac_sigma_deg) ** 2),
+            "hold_vel_steady": self.cfg.rew_hold_vel_steady
+            * hold
+            * torch.exp(-hold_velocity.pow(2) / self.cfg.hold_vel_steady_sigma_mps**2),
+            # The one penalty, and the term rew_delta_current should have been:
+            # it reads the wheel action's departure from its own 0.7 s average
+            # instead of from last step's value, so it sees the 0.83 Hz band
+            # that a step-to-step difference at 66.7 Hz cannot resolve.
+            # Normalized by the clamp so the worst case is exactly
+            # rew_hold_action_ac per step, with no cap-versus-weight arithmetic
+            # to redo whenever either moves.
+            "hold_action_ac": -self.cfg.rew_hold_action_ac
+            * hold
+            * (action_ac.clamp(-self.cfg.hold_action_ac_clamp, self.cfg.hold_action_ac_clamp)
+               / self.cfg.hold_action_ac_clamp).pow(2).mean(dim=1),
             # No hold_world_heading_drift term: yaw_error below already reads
             # yaw_ref without anti-windup, so it has no blind spot to patch in
             # the first place (see CommandGenerator._apply_reference_anti_windup).

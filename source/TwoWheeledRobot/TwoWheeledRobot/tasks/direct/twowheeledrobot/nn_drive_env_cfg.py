@@ -315,6 +315,49 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # DriveObservationBuilder's docstring) — rew_yaw_error below already reads
     # true drift directly via yaw_err_cos, in every regime, without a separate
     # hold-gated term.
+    # ---- Station-keeping steadiness (2026-08-21) ---------------------------
+    # Added against measured hardware, not a simulation symptom. The deployed
+    # range+GRU policy station-keeps in a 0.83 Hz limit cycle: +-2 deg pitch,
+    # +-0.1 m/s, 0.52 m of wander over a 17 s hold. Replaying that capture
+    # through the weights above charges roughly 0.07/step for the entire
+    # oscillation, against a 1.0/step alive bonus -- rew_pitch's 3 deg deadband
+    # is wider than the swing (0.0007/step) and rew_delta_current measures
+    # 15 ms chatter rather than a 1.2 s period (0.0020/step). See
+    # SteadinessTracker in pure_nn_components.py for the full autopsy.
+    #
+    # Set all three to 0.0 to recover the pre-2026-08-21 reward exactly; that is
+    # the A/B for whether these terms, and not some other drift, changed the
+    # behaviour.
+    #
+    # Weights are sized against the measured cycle rather than guessed. At the
+    # captured 1.89 deg AC pitch, hold_pitch_steady pays exp(-(1.89/1.5)^2) =
+    # 0.21 of its 1.2, so holding still is worth ~0.95/step more than the
+    # deployed behaviour -- comparable to the alive bonus, and about 13x the
+    # total pressure the current reward puts on the oscillation. Bonuses are
+    # bounded and non-negative, so no fall-economics re-derivation is needed.
+    rew_hold_pitch_steady: float = 1.2
+    # 1.5 deg, chosen so the kernel is already well down the shoulder at the
+    # measured amplitude while still flat enough near zero not to chase the
+    # +-3 deg mounting bias -- which the AC residual removes anyway, but the
+    # sigma should not depend on that cancellation being perfect.
+    hold_pitch_ac_sigma_deg: float = 1.5
+    # Partner for the existing quadratic rew_hold_velocity, which at the
+    # measured 0.095 m/s charges only 0.041/step. sigma is deliberately tight:
+    # this term's job is to separate "actually stopped" from "slowly rocking",
+    # a distinction the quadratic is nearly flat across.
+    rew_hold_vel_steady: float = 0.8
+    hold_vel_steady_sigma_mps: float = 0.04
+    # The timescale-correct replacement for what rew_delta_current cannot see.
+    # Kept small: it is a tie-breaker between equally steady solutions, and the
+    # pitch/velocity terms are the ones carrying the actual objective. Penalty
+    # is normalized by the clamp, so this weight IS the per-step worst case.
+    rew_hold_action_ac: float = 0.3
+    hold_action_ac_clamp: float = 0.5  # tanh units of departure from the 0.7 s mean
+    # 0.7 s => a 0.23 Hz high-pass corner: DC (IMU mounting bias, a permanent
+    # lean) is removed completely, the measured 0.83 Hz cycle passes at ~0.96.
+    # Raise it to also catch slower wandering; lower it and the term starts
+    # taxing legitimate fast corrections instead of oscillation.
+    hold_ac_tau_s: float = 0.7
     hold_velocity_cmd_threshold_mps: float = 0.03
     hold_yaw_rate_cmd_threshold_radps: float = 0.05
     # 1 - cos(error) instead of a clamped quadratic: bounded in [0, 2] for any
