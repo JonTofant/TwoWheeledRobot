@@ -103,6 +103,7 @@ class CurrentActionProcessor:
         self.left_gain = torch.ones(num_envs, device=device)
         self.right_gain = torch.ones(num_envs, device=device)
         self.deadzone = torch.zeros(num_envs, 2, device=device)
+        self.breakaway_mult = torch.ones(num_envs, 2, device=device)
         self.bias = torch.zeros(num_envs, 2, device=device)
         self.tau_s = torch.full((num_envs, 2), cfg.motor_tau_s_range[0], device=device)
         self.current_limit = torch.full((num_envs, 2), cfg.i_max_a, device=device)
@@ -128,11 +129,24 @@ class CurrentActionProcessor:
         # correlates at r = +0.989 across units (EMB-18), so per-direction sampling
         # would train over motors that do not exist. Do not split this into 4 draws.
         self.deadzone[env_ids] = torch.empty(n, 2, device=self.device).uniform_(dz_lo, dz_hi)
+        # Per-wheel breakaway draw. Independent of the deadzone draw: the
+        # kinetic value is a measured per-unit constant, the breakaway factor is
+        # an assumed bound (see cfg), and pretending one predicts the other
+        # would invent a correlation nobody measured.
+        bk_lo, bk_hi = self.cfg.motor_breakaway_multiplier_range
+        self.breakaway_mult[env_ids] = torch.empty(n, 2, device=self.device).uniform_(bk_lo, bk_hi)
         self.bias[env_ids] = torch.empty(n, 2, device=self.device).uniform_(bias_lo, bias_hi)
         self.tau_s[env_ids] = torch.empty(n, 2, device=self.device).uniform_(tau_lo, tau_hi)
         self.current_limit[env_ids] = torch.empty(n, 2, device=self.device).uniform_(limit_lo, limit_hi)
 
-    def process(self, raw_actions: torch.Tensor, dt: float) -> torch.Tensor:
+    def process(self, raw_actions: torch.Tensor, dt: float, wheel_omega: torch.Tensor | None = None) -> torch.Tensor:
+        """Map policy actions to commanded wheel current.
+
+        ``wheel_omega`` (rad/s, per wheel) enables the Stribeck breakaway term.
+        Optional so callers that do not model it keep the previous behaviour;
+        with the default multiplier range of (1.0, 1.0) passing it changes
+        nothing either, so this is inert until the cfg is raised.
+        """
         self.prev_command_current = self.command_current.clone()
         self.net_current = torch.tanh(raw_actions[:, :2]) * self.cfg.i_max_a
         delayed = torch.where(self.action_delay_samples.view(-1, 1) > 0, self.action_delay_current, self.net_current)
@@ -147,7 +161,17 @@ class CurrentActionProcessor:
 
         gain = torch.stack([self.left_gain, self.right_gain], dim=1)
         motor_target = self.filtered_current * gain + self.bias
-        motor_target = torch.sign(motor_target) * torch.clamp(motor_target.abs() - self.deadzone, min=0.0)
+        # Stribeck: the deadzone is largest from rest and decays toward the
+        # measured kinetic value as the wheel spins up. exp(-|w|/w_s) rather
+        # than a threshold switch -- a hard switch is a discontinuity in the
+        # plant exactly where station-keeping operates, which is both physically
+        # wrong and a poor thing to ask a policy to learn across.
+        deadzone = self.deadzone
+        if wheel_omega is not None:
+            excess = (self.breakaway_mult - 1.0).clamp(min=0.0)
+            stribeck = torch.exp(-wheel_omega.abs() / max(self.cfg.motor_breakaway_speed_radps, 1.0e-6))
+            deadzone = self.deadzone * (1.0 + excess * stribeck)
+        motor_target = torch.sign(motor_target) * torch.clamp(motor_target.abs() - deadzone, min=0.0)
         motor_target = torch.maximum(-self.current_limit, torch.minimum(motor_target, self.current_limit))
 
         lag_alpha = (dt / torch.clamp(self.tau_s, min=dt)).clamp(0.0, 1.0)

@@ -276,7 +276,11 @@ class PureNNBalanceEnv(StandupEnv):
         zero_cg_targets = torch.max(self._cg_joint_lo, torch.min(self._cg_joint_hi, zero_cg_targets))
         self.robot.set_joint_position_target(zero_cg_targets, joint_ids=self._cg_ids)
 
-        self._wheel_i_cmd = self._action_processor.process(actions, self.step_dt)
+        # Wheel speed BEFORE this step's torque is applied -- the friction the
+        # command must overcome is the one at the current state.
+        self._wheel_i_cmd = self._action_processor.process(
+            actions, self.step_dt, self.robot.data.joint_vel[:, self._wheel_ids]
+        )
         self._wheel_i_des = self._action_processor.net_current.clone()
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()

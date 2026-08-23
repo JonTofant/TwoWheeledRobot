@@ -258,7 +258,11 @@ class NNDriveEnv(PureNNBalanceEnv):
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
         # Wheel current path — identical motor model to PureNNBalanceEnv.
-        self._wheel_i_cmd = self._action_processor.process(wheel_actions, self.step_dt)
+        # Wheel speed BEFORE this step's torque is applied -- the friction the
+        # command must overcome is the one at the current state.
+        self._wheel_i_cmd = self._action_processor.process(
+            wheel_actions, self.step_dt, self.robot.data.joint_vel[:, self._wheel_ids]
+        )
         self._wheel_i_des = self._action_processor.net_current.clone()
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()

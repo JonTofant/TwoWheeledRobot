@@ -128,6 +128,37 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     # Provisional: n = 12 of a ~30-unit target — re-derive from EMB-18 before any
     # EXP-B result is written up.
     motor_deadzone_a_range: tuple = (0.031, 0.078)
+    # Velocity-dependent breakaway (Stribeck), added 2026-08-23. DEFAULT-OFF:
+    # a multiplier of 1.0 reproduces the previous constant-deadzone plant
+    # EXACTLY, so the 2026-08-10 paper arms are unaffected until this is raised
+    # from the CLI. Do not change the default without re-running those arms.
+    #
+    # The range above is the *stopping* (kinetic) deadzone. The comment on it
+    # already records that breakaway from rest is 2-3x larger and was not
+    # reliably measurable on the EMB-18 rig. The sim has never represented that
+    # asymmetry: process() subtracted one constant regardless of wheel speed, so
+    # the plant was equally hard to move at rest and at speed. That is precisely
+    # backwards for this robot -- station-keeping lives at zero wheel speed,
+    # where real stiction is worst, and a constant deadzone instead taxes
+    # driving, where it is mildest.
+    #
+    # Measured 2026-08-23: training against a CONSTANT 0.031-0.160 A range held
+    # station_keeping rms_pitch at 0.571 deg under that same range (versus 2.624
+    # deg for a policy that had never seen it), but pushed drive_backward_slow
+    # velocity error to 0.122 and failed the stage-5 gate on it -- the driving
+    # penalty is an artifact of applying breakaway magnitude while rolling.
+    # Stribeck form fixes that: full breakaway at rest, decaying to the kinetic
+    # value with a speed constant.
+    #
+    # ASSUMED, not IDENTIFIED, for paper section 2.4: the 2-3x factor is from the
+    # deadzone comment above and is not a bench measurement. The bench rig
+    # discards the transient that would measure it.
+    motor_breakaway_multiplier_range: tuple = (1.0, 1.0)  # x kinetic; try (2.0, 3.0)
+    # Wheel speed at which the breakaway excess has decayed to 1/e. 0.5 rad/s is
+    # 0.025 m/s at the 0.0505 m wheel radius -- slow enough that ordinary driving
+    # sits in the kinetic regime, fast enough to cover the station-keeping band
+    # (the measured 0.83 Hz cycle peaks near 0.1 m/s = 2.0 rad/s).
+    motor_breakaway_speed_radps: float = 0.5
     # Constant per-wheel current offset, added before the deadzone is applied, so
     # it is what would make a zero command produce torque. IDENTIFIED AS ZERO
     # (EMB-17, 2026-08-04), measured directly in the stalled region (|command| <=
