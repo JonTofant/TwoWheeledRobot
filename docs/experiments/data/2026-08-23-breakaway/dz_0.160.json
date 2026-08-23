@@ -1,0 +1,29 @@
+{
+  "num_envs": 64,
+  "num_steps": 1000,
+  "policy": "/workspace/TwoWheeledRobot/ExportedPolicy/fixedstance_range_gru_2026-08-10/2026-08-10_23-51-29_range_gru_stage5/model_775.pt",
+  "scenarios": {
+    "station_keeping": {
+      "achieved_speed_mps": 0.09814750403165817,
+      "fall_rate": 0.0,
+      "final_pos_err_m": 0.09349539875984192,
+      "invalid_state_rate": 0.0,
+      "max_pos_err_m": 0.16793176531791687,
+      "mean_velocity_mps": 0.008228141814470291,
+      "mean_yaw_rate_radps": 0.014661130495369434,
+      "physics_broken_rate": 0.0,
+      "rms_current_a": 0.06376056373119354,
+      "rms_pitch_deg": 2.6238308300387385,
+      "rms_roll_deg": 0.38308844851650176,
+      "rms_vel_err_mps": 0.11139312386512756,
+      "rms_yaw_rate_err_radps": 0.06332996487617493,
+      "sampled_env_fraction": 1.0,
+      "survival_time_s": 15.0,
+      "termination_rate": 0.0,
+      "timeout_rate": 0.0,
+      "world_drift_m": 0.10321669280529022
+    }
+  },
+  "seed": 42,
+  "terrain": "generator"
+}

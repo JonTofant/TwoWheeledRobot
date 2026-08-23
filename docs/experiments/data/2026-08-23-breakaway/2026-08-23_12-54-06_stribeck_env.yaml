@@ -1,0 +1,805 @@
+viewer:
+  eye: !!python/tuple
+  - 7.5
+  - 7.5
+  - 7.5
+  lookat: !!python/tuple
+  - 0.0
+  - 0.0
+  - 0.0
+  cam_prim_path: /OmniverseKit_Persp
+  resolution: !!python/tuple
+  - 1280
+  - 720
+  origin_type: world
+  env_index: 0
+  asset_name: null
+  body_name: null
+sim:
+  physics_prim_path: /physicsScene
+  device: cuda:0
+  dt: 0.001
+  render_interval: 20
+  gravity: !!python/tuple
+  - 0.0
+  - 0.0
+  - -9.81
+  enable_scene_query_support: false
+  use_fabric: true
+  physx:
+    solver_type: 1
+    solve_articulation_contact_last: false
+    min_position_iteration_count: 1
+    max_position_iteration_count: 255
+    min_velocity_iteration_count: 0
+    max_velocity_iteration_count: 255
+    enable_ccd: false
+    enable_stabilization: false
+    enable_external_forces_every_iteration: false
+    enable_enhanced_determinism: false
+    bounce_threshold_velocity: 0.5
+    friction_offset_threshold: 0.04
+    friction_correlation_distance: 0.025
+    gpu_max_rigid_contact_count: 8388608
+    gpu_max_rigid_patch_count: 163840
+    gpu_found_lost_pairs_capacity: 2097152
+    gpu_found_lost_aggregate_pairs_capacity: 33554432
+    gpu_total_aggregate_pairs_capacity: 2097152
+    gpu_collision_stack_size: 67108864
+    gpu_heap_capacity: 67108864
+    gpu_temp_buffer_capacity: 16777216
+    gpu_max_num_partitions: 8
+    gpu_max_soft_body_contacts: 1048576
+    gpu_max_particle_contacts: 1048576
+  physics_material:
+    func: isaaclab.sim.spawners.materials.physics_materials:spawn_rigid_body_material
+    static_friction: 0.5
+    dynamic_friction: 0.5
+    restitution: 0.0
+    friction_combine_mode: average
+    restitution_combine_mode: average
+    compliant_contact_stiffness: 0.0
+    compliant_contact_damping: 0.0
+  render:
+    enable_translucency: null
+    enable_reflections: null
+    enable_global_illumination: null
+    antialiasing_mode: null
+    enable_dlssg: null
+    enable_dl_denoiser: null
+    dlss_mode: null
+    enable_direct_lighting: null
+    samples_per_pixel: null
+    enable_shadows: null
+    enable_ambient_occlusion: null
+    dome_light_upper_lower_strategy: null
+    carb_settings: null
+    rendering_mode: null
+  create_stage_in_memory: false
+  logging_level: WARNING
+  save_logs_to_file: true
+  log_dir: null
+ui_window_class_type: isaaclab.envs.ui.base_env_window:BaseEnvWindow
+seed: 42
+decimation: 15
+is_finite_horizon: false
+episode_length_s: 20.0
+scene:
+  num_envs: 4096
+  env_spacing: 2.5
+  lazy_sensor_update: true
+  replicate_physics: true
+  filter_collisions: true
+  clone_in_fabric: false
+events: null
+observation_space: 13
+num_observations: null
+state_space: 0
+num_states: null
+observation_noise_model: null
+action_space: 2
+num_actions: null
+action_noise_model: null
+rerender_on_reset: false
+num_rerenders_on_reset: 0
+wait_for_textures: true
+xr: null
+log_dir: /workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-08-23_12-54-06_stribeck_stage5
+bno080:
+  class_type: isaaclab.sensors.imu.imu:Imu
+  prim_path: /World/envs/env_.*/Robot/SimplifiedBipedMainAssembly/SimplifiedBipedMainAssembly/Platform_Group/BNO080
+  update_period: 0.0
+  history_length: 0
+  debug_vis: false
+  offset:
+    pos: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.0
+    rot: !!python/tuple
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+  visualizer_cfg: null
+  gravity_bias: !!python/tuple
+  - 0.0
+  - 0.0
+  - 9.81
+enable_wheel_contacts: false
+wheel_contacts:
+  class_type: isaaclab.sensors.contact_sensor.contact_sensor:ContactSensor
+  prim_path: /World/envs/env_.*/Robot/SimplifiedBipedMainAssembly/SimplifiedBipedMainAssembly/DDSM115_Simplified.*
+  update_period: 0.0
+  history_length: 1
+  debug_vis: false
+  track_pose: false
+  track_contact_points: false
+  track_friction_forces: false
+  max_contact_data_count_per_prim: 4
+  track_air_time: false
+  force_threshold: 1.0
+  filter_prim_paths_expr: []
+  visualizer_cfg:
+    prim_path: /Visuals/ContactSensor
+    markers:
+      contact:
+        func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+        visible: true
+        semantic_tags: null
+        copy_from_source: true
+        mass_props: null
+        rigid_props: null
+        collision_props: null
+        activate_contact_sensors: false
+        visual_material_path: material
+        visual_material:
+          func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+          diffuse_color: !!python/tuple
+          - 1.0
+          - 0.0
+          - 0.0
+          emissive_color: !!python/tuple
+          - 0.0
+          - 0.0
+          - 0.0
+          roughness: 0.5
+          metallic: 0.0
+          opacity: 1.0
+        physics_material_path: material
+        physics_material: null
+        radius: 0.02
+      no_contact:
+        func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+        visible: false
+        semantic_tags: null
+        copy_from_source: true
+        mass_props: null
+        rigid_props: null
+        collision_props: null
+        activate_contact_sensors: false
+        visual_material_path: material
+        visual_material:
+          func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+          diffuse_color: !!python/tuple
+          - 0.0
+          - 1.0
+          - 0.0
+          emissive_color: !!python/tuple
+          - 0.0
+          - 0.0
+          - 0.0
+          roughness: 0.5
+          metallic: 0.0
+          opacity: 1.0
+        physics_material_path: material
+        physics_material: null
+        radius: 0.02
+spawn_upright_z: 0.06859
+spawn_lateral_h: 0.13
+spawn_clearance: 0.04
+spawn_tilt_noise_std: 0.175
+spawn_weight_right_side: 0.15
+spawn_weight_left_side: 0.15
+spawn_weight_forward: 0.15
+spawn_weight_backward: 0.15
+spawn_weight_upside_down: 0.15
+spawn_weight_partial: 0.25
+success_pitch_threshold: 0.25881904510252074
+success_roll_threshold: 0.13917310096006544
+success_steps_required: 1000000000
+wheel_actuator_model: mujoco_torque
+wheel_torque_command_limit: 4.0
+wheel_current_max: 4.0
+ddsm115_wheel_current_max: 1.28
+wheel_velocity_norm: 20.943951023931955
+cg_use_fixed_gains: true
+cg_fixed_kp: 60.0
+cg_fixed_kd: 4.0
+rew_uprighting_scale: 1.0
+rew_uprighting_sigma: 0.3
+rew_success_bonus: 15.0
+rew_fast_success_scale: 10.0
+rew_final_pose_scale: 0.35
+final_pose_deg_threshold: 12.0
+rew_displacement_scale: -0.02
+rew_wheel_energy_scale: -0.0002
+rew_cg_energy_scale: -2.0e-05
+rew_action_rate_scale: -0.002
+rew_timeout_penalty: -0.03
+cg_kp_scale_range: !!python/tuple
+- 1.0
+- 1.0
+cg_kd_scale_range: !!python/tuple
+- 1.0
+- 1.0
+wheel_damping_scale_range: !!python/tuple
+- 1.0
+- 1.0
+noise_proj_grav_std: 0.01
+noise_ang_vel_std: 0.02
+noise_cg_pos_std: 0.005
+robot_cfg:
+  class_type: isaaclab.assets.articulation.articulation:Articulation
+  prim_path: /World/envs/env_.*/Robot
+  spawn:
+    func: TwoWheeledRobot.tasks.direct.twowheeledrobot.robot_cfg:_spawn_robot_with_joint_limits
+    visible: true
+    semantic_tags: null
+    copy_from_source: true
+    mass_props: null
+    deformable_props: null
+    rigid_props:
+      rigid_body_enabled: null
+      kinematic_enabled: null
+      disable_gravity: false
+      linear_damping: 0.0
+      angular_damping: 0.0
+      max_linear_velocity: 10.0
+      max_angular_velocity: 50.0
+      max_depenetration_velocity: 1.0
+      max_contact_impulse: null
+      enable_gyroscopic_forces: null
+      retain_accelerations: false
+      solver_position_iteration_count: null
+      solver_velocity_iteration_count: null
+      sleep_threshold: null
+      stabilization_threshold: null
+    collision_props: null
+    activate_contact_sensors: true
+    scale: null
+    articulation_props:
+      articulation_enabled: null
+      enabled_self_collisions: false
+      solver_position_iteration_count: 8
+      solver_velocity_iteration_count: 4
+      sleep_threshold: null
+      stabilization_threshold: null
+      fix_root_link: null
+    fixed_tendons_props: null
+    spatial_tendons_props: null
+    joint_drive_props: null
+    visual_material_path: material
+    visual_material: null
+    usd_path: /workspace/TwoWheeledRobot/source/TwoWheeledRobot/docs/ColectedUSD_v2/World0.usd
+    variants: null
+  init_state:
+    pos: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.06859
+    rot: !!python/tuple
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    lin_vel: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.0
+    ang_vel: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.0
+    joint_pos: {}
+    joint_vel:
+      .*: 0.0
+  collision_group: 0
+  debug_vis: false
+  articulation_root_prim_path: null
+  soft_joint_pos_limit_factor: 1.0
+  actuators:
+    wheel_joints:
+      class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+      joint_names_expr:
+      - DDSM115_Levi
+      - DDSM115_Desni
+      effort_limit: null
+      velocity_limit: null
+      effort_limit_sim: 4.0
+      velocity_limit_sim: 1000000.0
+      stiffness: 0.0
+      damping: 0.2
+      armature: null
+      friction: null
+      dynamic_friction: null
+      viscous_friction: null
+    cybergear_joints:
+      class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+      joint_names_expr:
+      - front_left
+      - front_right
+      - back_left
+      - back_right
+      effort_limit: null
+      velocity_limit: 30.0
+      effort_limit_sim: 12.0
+      velocity_limit_sim: null
+      stiffness: 30.0
+      damping: 3.0
+      armature: null
+      friction: null
+      dynamic_friction: null
+      viscous_friction: null
+    bearing_joints:
+      class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+      joint_names_expr:
+      - (?!DDSM115_Levi|DDSM115_Desni|front_left|front_right|back_left|back_right).+
+      effort_limit: null
+      velocity_limit: 50.0
+      effort_limit_sim: 0.0
+      velocity_limit_sim: null
+      stiffness: 0.0
+      damping: 0.005
+      armature: null
+      friction: null
+      dynamic_friction: null
+      viscous_friction: null
+  actuator_value_resolution_debug_print: false
+floor_initial_pitch_deg: 3.0
+floor_stop_pitch_deg: 25.0
+fall_mode: tilt
+contact_force_threshold_n: 1.0
+fall_pitch_threshold_deg: 25.0
+fall_total_tilt_threshold_deg: 25.0
+fall_consecutive_steps: 5
+position_stop_m: 1.0
+training_mode: true
+evaluation_mode: false
+include_yaw_rate: true
+observation_scale: !!python/tuple
+- 0.5
+- 1.0
+- 0.4363323129985824
+- 4.0
+- 1.0
+- 1.0
+- 4.0
+- 1.0
+- 2.0
+- 2.0
+- 2.0
+- 0.4363323129985824
+- 4.0
+i_max_a: 2.0
+action_smoothing_alpha: 0.0
+enable_current_slew_limit: false
+hardware_safe_current_slew_limit: false
+current_slew_limit_a: 0.3
+curriculum_stage: 5
+reset_pitch_range_deg: 12.0
+reset_pitch_rate_range_radps: 0.5
+reset_velocity_range_mps: 0.15
+rew_alive: 1.0
+rew_pitch: 6.0
+rew_pitch_rate: 0.5
+rew_roll: 12.0
+rew_roll_rate: 0.5
+rew_velocity: 0.15
+rew_position: 3.0
+rew_yaw_error: 0.5
+rew_yaw_rate: 0.3
+rew_current: 0.01
+rew_delta_current: 0.05
+fall_penalty: -100.0
+physics_broken_penalty: -100.0
+invalid_state_penalty: -100.0
+wheel_frictionloss_range: !!python/tuple
+- 0.007
+- 0.013
+wheel_viscous_damping_randomization_active: true
+wheel_viscous_damping_range: !!python/tuple
+- 0.006
+- 0.014
+ground_friction_randomization_mode: per_run
+ground_static_friction_range: !!python/tuple
+- 0.5
+- 1.1
+ground_dynamic_friction_range: !!python/tuple
+- 0.4
+- 0.9
+body_mass_scale_range: !!python/tuple
+- 0.85
+- 1.15
+body_com_height_scale_range: !!python/tuple
+- 0.9
+- 1.1
+body_pitch_inertia_scale_range: !!python/tuple
+- 0.8
+- 1.2
+wheel_radius_scale_range: !!python/tuple
+- 0.98
+- 1.02
+randomization_debug_log_resets: 3
+randomization_debug_env_count: 4
+motor_gain_range: !!python/tuple
+- 0.97
+- 1.03
+motor_deadzone_a_range: !!python/tuple
+- 0.031
+- 0.078
+motor_breakaway_multiplier_range: !!python/tuple
+- 2.0
+- 3.0
+motor_breakaway_speed_radps: 0.5
+motor_bias_a_range: !!python/tuple
+- 0.0
+- 0.0
+motor_tau_s_range: !!python/tuple
+- 0.005
+- 0.01
+motor_current_limit_a_range: !!python/tuple
+- 1.9
+- 2.1
+pitch_bias_rad_range: !!python/tuple
+- -0.05235987755982989
+- 0.05235987755982989
+pitch_noise_std: 0.002617993877991494
+pitch_rate_noise_std: 0.02
+velocity_noise_std: 0.01
+human_push_start_s_range: !!python/tuple
+- 1.5
+- 16.0
+human_push_duration_s_range: !!python/tuple
+- 0.05
+- 0.2
+human_push_fx_n_range: !!python/tuple
+- -8.0
+- 8.0
+human_push_fy_n_range: !!python/tuple
+- -2.5
+- 2.5
+human_push_yaw_torque_nm_range: !!python/tuple
+- -0.25
+- 0.25
+payload_start_s_range: !!python/tuple
+- 1.0
+- 12.0
+payload_pitch_torque_nm_range: !!python/tuple
+- -0.4
+- 0.4
+enable_slope_disturbance: false
+stage5_slope_probability: 0.05
+slope_fx_n_range: !!python/tuple
+- -1.5
+- 1.5
+sine_force_n_range: !!python/tuple
+- 0.5
+- 2.0
+sine_frequency_hz_range: !!python/tuple
+- 0.2
+- 1.0
+benchmark_disturbance_kind: ''
+terrain_mode: generator
+terrain:
+  class_type: isaaclab.terrains.terrain_importer:TerrainImporter
+  collision_group: -1
+  prim_path: /World/ground
+  num_envs: 4096
+  terrain_type: generator
+  terrain_generator:
+    class_type: isaaclab.terrains.terrain_generator:TerrainGenerator
+    seed: 42
+    curriculum: false
+    size: !!python/tuple
+    - 8.0
+    - 8.0
+    border_width: 12.0
+    border_height: 1.0
+    num_rows: 6
+    num_cols: 6
+    color_scheme: none
+    horizontal_scale: 0.05
+    vertical_scale: 0.002
+    slope_threshold: 0.75
+    sub_terrains:
+      flat:
+        function: isaaclab.terrains.trimesh.mesh_terrains:flat_terrain
+        proportion: 0.35
+        size: !!python/tuple
+        - 8.0
+        - 8.0
+        flat_patch_sampling: null
+      bumps_small:
+        function: isaaclab.terrains.height_field.hf_terrains:random_uniform_terrain
+        proportion: 0.15
+        size: !!python/tuple
+        - 8.0
+        - 8.0
+        flat_patch_sampling: null
+        border_width: 0.25
+        horizontal_scale: 0.05
+        vertical_scale: 0.002
+        slope_threshold: 0.75
+        noise_range: !!python/tuple
+        - 0.004
+        - 0.01
+        noise_step: 0.002
+        downsampled_scale: 0.2
+      bumps_large:
+        function: isaaclab.terrains.height_field.hf_terrains:random_uniform_terrain
+        proportion: 0.1
+        size: !!python/tuple
+        - 8.0
+        - 8.0
+        flat_patch_sampling: null
+        border_width: 0.25
+        horizontal_scale: 0.05
+        vertical_scale: 0.002
+        slope_threshold: 0.75
+        noise_range: !!python/tuple
+        - 0.01
+        - 0.022
+        noise_step: 0.002
+        downsampled_scale: 0.3
+      slope_up:
+        function: isaaclab.terrains.height_field.hf_terrains:pyramid_sloped_terrain
+        proportion: 0.2
+        size: !!python/tuple
+        - 8.0
+        - 8.0
+        flat_patch_sampling: null
+        border_width: 0.25
+        horizontal_scale: 0.05
+        vertical_scale: 0.002
+        slope_threshold: 0.75
+        slope_range: !!python/tuple
+        - 0.05
+        - 0.16
+        platform_width: 1.5
+        inverted: false
+      slope_down:
+        function: isaaclab.terrains.height_field.hf_terrains:pyramid_sloped_terrain
+        proportion: 0.2
+        size: !!python/tuple
+        - 8.0
+        - 8.0
+        flat_patch_sampling: null
+        border_width: 0.25
+        horizontal_scale: 0.05
+        vertical_scale: 0.002
+        slope_threshold: 0.75
+        slope_range: !!python/tuple
+        - 0.05
+        - 0.16
+        platform_width: 1.5
+        inverted: true
+    difficulty_range: !!python/tuple
+    - 0.0
+    - 1.0
+    use_cache: false
+    cache_dir: /tmp/isaaclab/terrains
+  usd_path: null
+  env_spacing: 2.5
+  use_terrain_origins: true
+  visual_material:
+    func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+    diffuse_color: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.0
+    emissive_color: !!python/tuple
+    - 0.0
+    - 0.0
+    - 0.0
+    roughness: 0.5
+    metallic: 0.0
+    opacity: 1.0
+  physics_material:
+    func: isaaclab.sim.spawners.materials.physics_materials:spawn_rigid_body_material
+    static_friction: 0.8836560790747303
+    dynamic_friction: 0.4125053776113335
+    restitution: 0.0
+    friction_combine_mode: multiply
+    restitution_combine_mode: multiply
+    compliant_contact_stiffness: 0.0
+    compliant_contact_damping: 0.0
+  max_init_terrain_level: null
+  debug_vis: false
+spawn_extra_clearance_m: 0.01
+ground_contact:
+  class_type: isaaclab.sensors.contact_sensor.contact_sensor:ContactSensor
+  prim_path: /World/envs/env_.*/Robot/SimplifiedBipedMainAssembly/SimplifiedBipedMainAssembly/.*
+  update_period: 0.0
+  history_length: 1
+  debug_vis: false
+  track_pose: false
+  track_contact_points: false
+  track_friction_forces: false
+  max_contact_data_count_per_prim: 4
+  track_air_time: false
+  force_threshold: 1.0
+  filter_prim_paths_expr: []
+  visualizer_cfg:
+    prim_path: /Visuals/ContactSensor
+    markers:
+      contact:
+        func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+        visible: true
+        semantic_tags: null
+        copy_from_source: true
+        mass_props: null
+        rigid_props: null
+        collision_props: null
+        activate_contact_sensors: false
+        visual_material_path: material
+        visual_material:
+          func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+          diffuse_color: !!python/tuple
+          - 1.0
+          - 0.0
+          - 0.0
+          emissive_color: !!python/tuple
+          - 0.0
+          - 0.0
+          - 0.0
+          roughness: 0.5
+          metallic: 0.0
+          opacity: 1.0
+        physics_material_path: material
+        physics_material: null
+        radius: 0.02
+      no_contact:
+        func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+        visible: false
+        semantic_tags: null
+        copy_from_source: true
+        mass_props: null
+        rigid_props: null
+        collision_props: null
+        activate_contact_sensors: false
+        visual_material_path: material
+        visual_material:
+          func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+          diffuse_color: !!python/tuple
+          - 0.0
+          - 1.0
+          - 0.0
+          emissive_color: !!python/tuple
+          - 0.0
+          - 0.0
+          - 0.0
+          roughness: 0.5
+          metallic: 0.0
+          opacity: 1.0
+        physics_material_path: material
+        physics_material: null
+        radius: 0.02
+include_cg_obs: false
+drive_observation_scale: !!python/tuple
+- 0.5
+- 1.0
+- 0.4363323129985824
+- 4.0
+- 1.0
+- 1.0
+- 4.0
+- 1.0
+- 2.0
+- 2.0
+- 2.0
+- 0.4363323129985824
+- 4.0
+cmd_stage_velocity_max_mps: !!python/tuple
+- 0.15
+- 0.3
+- 0.4
+- 0.5
+- 0.55
+cmd_stage_yaw_rate_max_radps: !!python/tuple
+- 0.0
+- 0.4
+- 0.6
+- 0.8
+- 1.0
+cmd_resample_s_range: !!python/tuple
+- 2.5
+- 5.0
+cmd_still_episode_prob: 0.35
+cmd_zero_axis_prob: 0.3
+cmd_velocity_slew_mps2: 1.0
+cmd_yaw_slew_radps2: 4.0
+cmd_settle_s: 1.0
+cmd_pos_err_clamp_m: 0.5
+forced_command_mode: ''
+forced_velocity_cmd_mps: 0.0
+forced_yaw_rate_cmd_radps: 0.0
+leg_action_mode: fixed
+fixed_leg_stance_rad: !!python/tuple
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+cg_position_scale_rad: 1.5707963267948966
+cg_target_slew_radps: 3.0
+cg_calib_bias_rad_range: !!python/tuple
+- -0.017453292519943295
+- 0.017453292519943295
+cg_kp_range: !!python/tuple
+- 28.5
+- 31.5
+cg_kd_range: !!python/tuple
+- 2.85
+- 3.15
+rew_vel_track: 0.8
+vel_track_sigma: 0.08
+rew_yaw_rate_track: 0.5
+yaw_rate_track_sigma: 0.2
+rew_vel_err: 1.0
+rew_yaw_rate_err: 0.15
+rew_position_far: 0.4
+pos_err_far_max_m: 1.5
+rew_hold_velocity: 4.0
+rew_hold_position: 4.0
+rew_hold_world_drift: 1.0
+hold_world_drift_clamp_m: 1.0
+rew_hold_pitch_steady: 1.2
+hold_pitch_ac_sigma_deg: 1.5
+rew_hold_vel_steady: 0.8
+hold_vel_steady_sigma_mps: 0.04
+rew_hold_action_ac: 0.3
+hold_action_ac_clamp: 0.5
+hold_ac_tau_s: 0.7
+hold_velocity_cmd_threshold_mps: 0.03
+hold_yaw_rate_cmd_threshold_radps: 0.05
+pitch_flat_deg: 3.0
+roll_flat_deg: 1.0
+rew_roll_abs: 1.0
+attitude_rate_pen_clamp_radps: 2.0
+rew_cg_pos: 0.0988
+rew_cg_rate: 3.951
+cg_rate_delta_clamp_rad: 0.045
+reset_stage_pitch_scale: !!python/tuple
+- 0.75
+- 0.833
+- 0.917
+- 1.0
+- 1.0
+reset_yaw_random: true
+com_offset_y_range_m: !!python/tuple
+- -0.001
+- 0.001
+com_offset_z_range_m: !!python/tuple
+- -0.01
+- 0.015
+odometry_scale_range: !!python/tuple
+- 0.97
+- 1.03
+pitch_rate_bias_radps_range: !!python/tuple
+- -0.03
+- 0.03
+yaw_rate_bias_radps_range: !!python/tuple
+- -0.03
+- 0.03
+yaw_rate_noise_std: 0.02
+roll_bias_rad_range: !!python/tuple
+- -0.017453292519943295
+- 0.017453292519943295
+roll_rate_bias_radps_range: !!python/tuple
+- -0.03
+- 0.03
+enable_force_noise: true
+force_noise_amp_n_range: !!python/tuple
+- 0.0
+- 0.6
+force_noise_tau_s: 0.3

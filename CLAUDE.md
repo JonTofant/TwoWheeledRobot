@@ -119,8 +119,26 @@ under `STM32_Diablo_Robot_Source/Core/Src/`). It is not vendored here.
   there, verified against firmware that actually runs.
 - Confirmed values: `cybergear.c` initialises all four motors at `kp = 30.0f`, `kd = 3.0f`
   (quantised over kp 0-500, kd 0-5), matching sim `CYBERGEAR_STIFFNESS` / `CYBERGEAR_DAMPING`.
-  `DDSM115.c` hard-codes `DZ_{LEFT,RIGHT}_{POS,NEG} = 0.04 A`, which under-corrects the
-  measured 53.4 mA population mean by about a third.
+- **`DZ_{LEFT,RIGHT}_{POS,NEG} = 0.04 A` in `DDSM115.c` are never read** (verified
+  2026-08-23 by grepping every `Core/{Src,Inc}/*.{c,h}` on `origin/feature/mdpi-actuators`:
+  the only hits are the definitions and the `extern`s in `DDSM115.h`). The command path is
+  `DDSM115setCurrent` / `DDSM115TransactCurrent`: clamp to `DDSM_COMMAND_LIMIT_A`, scale
+  `(i/8.0f)*32767`, pack. **There is no deadzone compensation at all** -- the deadzone is
+  100% uncompensated, not "under-corrected by a third" as this file previously said. The
+  variables are non-`const` and `extern`, i.e. set up for STM Studio Live Expressions
+  tuning, and never wired in. (The "below-deadzone fit" comment in `DDSM115.h` is about the
+  current *feedback* scale, not command compensation.)
+
+- **`rew_position_far` is dead** (verified 2026-08-23). `_apply_reference_anti_windup` does
+  `pos_ref += pos_err - pos_err.clamp(+-clamp)`, which leaves `x_odom - pos_ref` *already
+  clamped*. So `position_error_raw()` -- whose docstring promises "a pull toward home at any
+  drift distance" -- returns something bounded to +-`cmd_pos_err_clamp_m`, `pos_far` is
+  `<= v*step_dt` (~0.0075 m at 0.5 m/s), and the term delivers <=0.003/step against a designed
+  0.6/step max. A policy past 0.5 m of drift has NO restoring gradient. `rew_hold_world_drift`
+  is the only drift signal in the reward a drifting policy cannot flatten.
+- `DisturbanceGenerator.active_for_recovery()` is a ready-made "a disturbance is live"
+  predicate with **zero callers**. `_sample_payload` writes `payload_torque` only -- the
+  "downward force plus payload_torque" in `nn_drive_env_cfg.py`'s comment does not exist.
 
 ## External sources of truth
 
@@ -136,8 +154,12 @@ under `STM32_Diablo_Robot_Source/Core/Src/`). It is not vendored here.
 
 ## Known-unverified
 
-- `motor_tau_s_range` is the last actuator parameter with no measurement behind it; it needs
-  the 300 ms settle transient the bench rig currently discards.
+- **`motor_tau_s_range` is inert -- it does nothing at all** (verified 2026-08-23). The range
+  is `(0.005, 0.010)` and the control `dt` is 15 ms, so `lag_alpha = dt / clamp(tau, min=dt)`
+  is *exactly 1.0* for every draw and `command_current = motor_target` unconditionally. The
+  current-loop pole is zero in every environment. It was previously listed here as merely
+  unmeasured; measuring it is wasted effort unless the true value exceeds 15 ms, and the fix
+  is to widen the range or drop the parameter, not to bench it.
 - Whether wheel friction is modelled twice — the measured deadzone AND a joint friction
   coefficient. Open task in Notion.
 - `STM32_DEPLOYMENT.md` in this repo is partly **specification, not observation**: claims
