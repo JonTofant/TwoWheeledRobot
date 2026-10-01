@@ -106,6 +106,7 @@ class CurrentActionProcessor:
         self.bias = torch.zeros(num_envs, 2, device=device)
         self.tau_s = torch.full((num_envs, 2), cfg.motor_tau_s_range[0], device=device)
         self.current_limit = torch.full((num_envs, 2), cfg.i_max_a, device=device)
+        self.motor_target = torch.zeros(num_envs, 2, device=device)
 
     def reset(self, env_ids: torch.Tensor) -> None:
         n = len(env_ids)
@@ -114,7 +115,12 @@ class CurrentActionProcessor:
         self.command_current[env_ids] = 0.0
         self.prev_command_current[env_ids] = 0.0
         self.action_delay_current[env_ids] = 0.0
-        self.action_delay_samples[env_ids] = torch.randint(0, 2, (n,), device=self.device)
+        self.motor_target[env_ids] = 0.0
+        # Only 0 or 1 policy steps of delay are implemented (one buffered action).
+        delay_lo, delay_hi = getattr(self.cfg, "action_delay_steps_range", (0, 1))
+        if not 0 <= delay_lo <= delay_hi <= 1:
+            raise ValueError(f"action_delay_steps_range must lie within [0, 1], got {(delay_lo, delay_hi)}")
+        self.action_delay_samples[env_ids] = torch.randint(delay_lo, delay_hi + 1, (n,), device=self.device)
 
         gain_lo, gain_hi = self.cfg.motor_gain_range
         dz_lo, dz_hi = self.cfg.motor_deadzone_a_range
@@ -132,7 +138,14 @@ class CurrentActionProcessor:
         self.tau_s[env_ids] = torch.empty(n, 2, device=self.device).uniform_(tau_lo, tau_hi)
         self.current_limit[env_ids] = torch.empty(n, 2, device=self.device).uniform_(limit_lo, limit_hi)
 
-    def process(self, raw_actions: torch.Tensor, dt: float) -> torch.Tensor:
+    def process(self, raw_actions: torch.Tensor, dt: float, apply_lag: bool = True) -> torch.Tensor:
+        """Map one policy action to the per-wheel motor target current.
+
+        With ``apply_lag=False`` the current-loop lag is left to the caller,
+        which must then call :meth:`step_lag` once per physics substep. That is
+        the only way a lag with tau below the 15 ms policy period has any
+        effect: applied once per policy step it is a pure pass-through.
+        """
         self.prev_command_current = self.command_current.clone()
         self.net_current = torch.tanh(raw_actions[:, :2]) * self.cfg.i_max_a
         delayed = torch.where(self.action_delay_samples.view(-1, 1) > 0, self.action_delay_current, self.net_current)
@@ -148,10 +161,21 @@ class CurrentActionProcessor:
         gain = torch.stack([self.left_gain, self.right_gain], dim=1)
         motor_target = self.filtered_current * gain + self.bias
         motor_target = torch.sign(motor_target) * torch.clamp(motor_target.abs() - self.deadzone, min=0.0)
-        motor_target = torch.maximum(-self.current_limit, torch.minimum(motor_target, self.current_limit))
+        self.motor_target = torch.maximum(-self.current_limit, torch.minimum(motor_target, self.current_limit))
 
-        lag_alpha = (dt / torch.clamp(self.tau_s, min=dt)).clamp(0.0, 1.0)
-        self.command_current = self.command_current + lag_alpha * (motor_target - self.command_current)
+        if apply_lag:
+            self.step_lag(dt)
+        return self.command_current
+
+    def step_lag(self, dt: float) -> torch.Tensor:
+        """Advance the first-order current loop by ``dt`` toward ``motor_target``.
+
+        Exact discretization of i' = (target - i) / tau for a target held over
+        the interval: alpha = 1 - exp(-dt / tau). tau <= 0 means no lag.
+        """
+        tau = self.tau_s
+        alpha = torch.where(tau > 0.0, 1.0 - torch.exp(-dt / tau.clamp(min=1e-9)), torch.ones_like(tau))
+        self.command_current = self.command_current + alpha * (self.motor_target - self.command_current)
         return self.command_current
 
     def delta_current(self) -> torch.Tensor:

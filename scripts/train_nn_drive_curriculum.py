@@ -5,6 +5,9 @@ Each stage saves frequent checkpoints, shortlists them by training reward, and
 runs a deterministic frozen-policy benchmark. Only a checkpoint that passes the
 stage gate is promoted. The selected checkpoint—not the newest file—is resumed
 by the next stage and exported after the final stage.
+
+With --selection last there is no shortlist or gate: each stage trains its
+fixed iteration budget and the newest checkpoint is resumed and exported.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ TASK_EXPORT_DIMS = {
     "Template-Twowheeledrobot-NNDrive-v0": (21, 4),
     "Template-Twowheeledrobot-NNDriveFixedStance-v0": (13, 0),
     "Template-Twowheeledrobot-NNDriveFixedStanceGRU-v0": (13, 0),
+    "Template-Twowheeledrobot-NNDriveFixedStanceWide-v0": (13, 0),
 }
 
 
@@ -241,6 +245,30 @@ def select_checkpoint(
     return selected[1]
 
 
+def select_last_checkpoint(run_dir: Path, stage: int) -> Path:
+    """Fixed-budget selection: the newest checkpoint, no benchmark involved.
+
+    Every arm then gets the same number of updates per stage, and nothing is
+    chosen against the seed-42 benchmark that the results are later reported on.
+    The manifest is still written so resume/archive tooling reads it the same way.
+    """
+    newest = max(run_dir.glob("model_*.pt"), key=checkpoint_iteration, default=None)
+    if newest is None:
+        raise RuntimeError(f"No checkpoint saved in {run_dir}")
+    manifest = {
+        "stage": stage,
+        "run": run_dir.name,
+        "selection": "last",
+        "selected_checkpoint": newest.name,
+        "selection_score": None,
+        "selected_via_gate_failure_fallback": False,
+        "candidates": [],
+    }
+    (run_dir / SELECTION_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"Selected {newest} for stage {stage}: last checkpoint (fixed budget)")
+    return newest
+
+
 def selected_checkpoint_from_manifest(run_dir: Path) -> Path:
     manifest_path = run_dir / SELECTION_MANIFEST
     if not manifest_path.is_file():
@@ -282,6 +310,13 @@ def main() -> None:
         type=str,
         default=None,
         help=f"Checkpoint within --load-run; defaults to its {SELECTION_MANIFEST}",
+    )
+    parser.add_argument(
+        "--selection",
+        choices=["gated", "last"],
+        default="gated",
+        help="gated: benchmark a reward-ranked shortlist and promote the best gate-passing checkpoint. "
+        "last: fixed budget, always resume from / export the newest checkpoint (no selection benchmarks).",
     )
     parser.add_argument("--selection-candidates", type=int, default=3)
     parser.add_argument("--benchmark-num-envs", type=int, default=64)
@@ -366,6 +401,9 @@ def main() -> None:
         previous_runs = {path for path in log_root.iterdir() if path.is_dir()} if log_root.is_dir() else set()
         subprocess.run(cmd, cwd=repo, check=True)
         selected_run = newly_created_run(log_root, previous_runs, stage)
+        if args.selection == "last":
+            selected_checkpoint = select_last_checkpoint(selected_run, stage)
+            continue
         selected_checkpoint = select_checkpoint(
             repo=repo,
             run_dir=selected_run,
@@ -401,7 +439,18 @@ def main() -> None:
     if args.headless:
         play_cmd.append("--headless")
     print(" ".join(play_cmd))
-    subprocess.run(play_cmd, cwd=repo, check=True)
+    # Same Kit startup SIGSEGV risk as the benchmark launches; play.py only
+    # exports the actor, so a retry is a pure re-run.
+    for attempt in range(1, BENCHMARK_LAUNCH_ATTEMPTS + 1):
+        completed = subprocess.run(play_cmd, cwd=repo)
+        if completed.returncode == 0:
+            break
+        print(
+            f"Export launch failed with exit {completed.returncode} (attempt {attempt}/{BENCHMARK_LAUNCH_ATTEMPTS})",
+            flush=True,
+        )
+        if attempt == BENCHMARK_LAUNCH_ATTEMPTS:
+            raise subprocess.CalledProcessError(completed.returncode, play_cmd)
 
     exported_policy = selected_run / "exported" / "policy.pt"
     actor_onnx = selected_run / "exported" / "policy.onnx"

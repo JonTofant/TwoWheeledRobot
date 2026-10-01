@@ -93,9 +93,24 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     wheel_frictionloss_range: tuple = (0.007, 0.013)
     wheel_viscous_damping_randomization_active: bool = True
     wheel_viscous_damping_range: tuple = (0.006, 0.014)  # Nm*s/rad, DDSM115 internal damping estimate.
-    ground_friction_randomization_mode: str = "per_run"  # Shared ground plane; sampled once at env startup.
+    # "per_run": one value for the shared ground, drawn from the seeded RNG at
+    # startup -- so every stage and every benchmark of a given seed gets the SAME
+    # draw (seed 42: 0.884/0.413), i.e. no randomization within a run. And the
+    # robot's shapes use the sim default 0.5/0.5 under the ground's "multiply"
+    # combine, so the effective friction was half of that (0.44/0.21).
+    # "per_episode" (NNDriveEnv only) samples the EFFECTIVE tire/floor friction
+    # per env per episode from these ranges, with dynamic clipped to <= static.
+    # ASSUMED ranges.
+    ground_friction_randomization_mode: str = "per_run"
     ground_static_friction_range: tuple = (0.5, 1.1)
     ground_dynamic_friction_range: tuple = (0.4, 0.9)
+    contact_friction_pool_size: int = 64
+
+    # Sensor-to-policy and policy-to-motor delays in whole policy steps (15 ms),
+    # sampled per episode. Only 0 or 1 is implemented. Previously hard-coded to
+    # {0, 1} for every arm, including the "point estimate" arm.
+    obs_delay_steps_range: tuple = (0, 1)
+    action_delay_steps_range: tuple = (0, 1)
 
     # Inactive/planned physical randomization. These ranges are not applied by
     # the current pure NN environment and must not be reported as active.
@@ -155,6 +170,10 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     # period, so one policy was trained across plants ranging from "responds
     # within the step" to "a full step behind", which is a large unsupported
     # variance. A wider robustness setting can still be applied from Hydra.
+    # NNDriveEnv integrates the lag every 1 ms physics substep with
+    # alpha = 1 - exp(-dt/tau). Until 2026-10-01 it ran once per 15 ms policy
+    # step, where alpha = dt/max(tau, dt) = 1 for this whole range: no lag at all.
+    # (0, 0) disables the lag and reproduces that behaviour.
     motor_tau_s_range: tuple = (0.005, 0.010)
     # ASSUMED. Saturation is a driver/firmware property rather than a
     # manufacturing one, so it should be near-identical across units. Narrowed

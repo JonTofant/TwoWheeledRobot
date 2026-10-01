@@ -214,8 +214,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
         runner.load(str(args_cli.checkpoint))
         policy = runner.get_inference_policy(device=env.unwrapped.device)
+        reset_policy = runner.alg.policy.reset
     else:
         policy = torch.jit.load(str(args_cli.policy), map_location=env_cfg.sim.device).eval()
+        reset_policy = getattr(policy, "reset", lambda: None)
     settle_steps = int((env_cfg.cmd_settle_s + 1.0) / env.unwrapped.step_dt)
 
     results: dict[str, dict[str, float]] = {}
@@ -226,6 +228,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         live_cfg.benchmark_disturbance_kind = dist_kind
         live_cfg.forced_velocity_cmd_mps = v_cmd
         live_cfg.forced_yaw_rate_cmd_radps = w_cmd
+        # Each scenario is a fresh start for a recurrent policy too: zero its
+        # hidden state, as the firmware does on (re)arm. Before 2026-10-01 the
+        # GRU carried the previous scenario's final state into the next one.
+        reset_policy()
         metrics = _scenario_metrics(policy, env, args_cli.num_steps, settle_steps)
         results[name] = metrics
         print(

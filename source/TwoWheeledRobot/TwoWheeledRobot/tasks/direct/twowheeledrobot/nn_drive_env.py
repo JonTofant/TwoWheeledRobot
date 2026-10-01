@@ -99,6 +99,23 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._platform_body_col = int(self._body_ids[0].item()) if self._body_ids is not None else 0
         self._resolve_contact_bodies()
 
+        # Per-episode tire/floor friction. The terrain material combines with
+        # "multiply" (it outranks the robot's "average"), so the friction PhysX
+        # uses is ground x robot. The robot's shapes carry no material of their
+        # own and get the sim default 0.5/0.5 -- under "per_run" the effective
+        # friction was therefore HALF the configured ground value. "per_episode"
+        # sets the ground to 1.0 and writes the sampled pair onto the robot's
+        # shapes, so the configured range is the effective one. Values come from
+        # a fixed pool because PhysX caps the number of unique materials.
+        self._contact_friction = torch.zeros(self.num_envs, 2, device=self.device)
+        self._contact_friction_pool = None
+        if self._ground_friction_randomization_mode == "per_episode":
+            pool_size = cfg.contact_friction_pool_size
+            static = torch.empty(pool_size).uniform_(*cfg.ground_static_friction_range)
+            dynamic = torch.empty(pool_size).uniform_(*cfg.ground_dynamic_friction_range)
+            # Sliding friction above static friction is unphysical.
+            self._contact_friction_pool = torch.stack([static, torch.minimum(dynamic, static)], dim=1)
+
         print(
             "[NNDriveEnv] joystick drive controller active, "
             f"dt={self.step_dt:.3f}s, obs={cfg.observation_space}, act={cfg.action_space}, "
@@ -161,6 +178,13 @@ class NNDriveEnv(PureNNBalanceEnv):
         if ground_mode == "per_run":
             ground_static = random.uniform(*self.cfg.ground_static_friction_range)
             ground_dynamic = random.uniform(*self.cfg.ground_dynamic_friction_range)
+        elif ground_mode == "per_episode":
+            # Neutral ground under "multiply": PhysX then uses exactly the robot
+            # material, which _randomize_contact_friction samples per episode.
+            ground_static = 1.0
+            ground_dynamic = 1.0
+        elif ground_mode != "inactive":
+            raise ValueError(f"Unsupported ground_friction_randomization_mode: {ground_mode!r}")
         self._ground_friction_randomization_mode = ground_mode
         self._ground_static_friction = ground_static
         self._ground_dynamic_friction = ground_dynamic
@@ -208,6 +232,17 @@ class NNDriveEnv(PureNNBalanceEnv):
         print(f"cybergear calibration bias: active, range {self.cfg.cg_calib_bias_rad_range} rad")
         noise_state = "active" if self.cfg.enable_force_noise else "inactive"
         print(f"force noise: {noise_state}, amp {self.cfg.force_noise_amp_n_range} N")
+        if getattr(self, "_ground_friction_randomization_mode", None) == "per_episode":
+            print(
+                "contact friction: active per-episode (effective tire/floor), static "
+                f"{self.cfg.ground_static_friction_range}, dynamic {self.cfg.ground_dynamic_friction_range} "
+                f"(dynamic <= static), pool of {self.cfg.contact_friction_pool_size}"
+            )
+        print(f"prev-current observation source: {self.cfg.prev_current_obs_source}")
+        print(
+            f"obs delay steps: {self.cfg.obs_delay_steps_range}, "
+            f"action delay steps: {self.cfg.action_delay_steps_range}"
+        )
 
     # ── State terms against the moving command references ────────────────────
 
@@ -250,29 +285,12 @@ class NNDriveEnv(PureNNBalanceEnv):
             wheel_actions = actions[:, 4:6]
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
-        # Wheel current path — identical motor model to PureNNBalanceEnv.
-        self._wheel_i_cmd = self._action_processor.process(wheel_actions, self.step_dt)
+        # Wheel current path. The per-unit motor model (delay, gain, deadzone,
+        # limit) runs once per policy step; the current-loop lag and the
+        # torque-speed envelope run every physics substep in _apply_action, so a
+        # tau below the 15 ms policy period actually filters the current.
+        self._action_processor.process(wheel_actions, self.step_dt, apply_lag=False)
         self._wheel_i_des = self._action_processor.net_current.clone()
-        self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
-        self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
-        self._wheel_velocity_used = self._wheel_velocity_raw.clone()
-        # Back-EMF only derates torque that does positive work against rotation
-        # (motoring). Torque opposing rotation (braking — exactly what a
-        # recovery controller needs near top speed) is current/thermal limited,
-        # not back-EMF limited, so it must not be derated by |omega| here.
-        same_sign = (self._wheel_tau_current * self._wheel_velocity_used) >= 0.0
-        self._wheel_omega_for_limiter = torch.where(
-            same_sign, self._wheel_velocity_used.abs(), torch.zeros_like(self._wheel_velocity_used)
-        )
-        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
-        self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
-        self._wheel_torque_cmd = torch.maximum(
-            -self._wheel_tau_speed_limit,
-            torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
-        )
-        self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
-        self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
-        self.robot.set_joint_effort_target(self._efforts_buf, joint_ids=self._wheel_ids)
 
         # Discrete disturbances (pushes/payload) + continuous force noise.
         if self._body_ids is not None:
@@ -295,6 +313,35 @@ class NNDriveEnv(PureNNBalanceEnv):
             except Exception:
                 self._last_disturbance_force.zero_()
                 self._last_disturbance_torque.zero_()
+
+    def _apply_action(self) -> None:
+        """Per physics substep: current-loop lag, then the DDSM115 torque envelope."""
+        self._wheel_i_cmd = self._action_processor.step_lag(self.physics_dt)
+        self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
+        self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
+        # Logical wheel velocity. The left joint is mirrored in the USD, so its
+        # raw joint velocity has the opposite sign to the logical current; using
+        # it raw (as before 2026-10-01) swapped motoring and braking on the left
+        # wheel only.
+        self._wheel_velocity_used = self._wheel_velocity_raw * self._wheel_sign
+        # Back-EMF only derates torque that does positive work against rotation
+        # (motoring). Torque opposing rotation (braking — exactly what a
+        # recovery controller needs near top speed) is current/thermal limited,
+        # not back-EMF limited, so it must not be derated by |omega| here.
+        same_sign = (self._wheel_tau_current * self._wheel_velocity_used) >= 0.0
+        self._wheel_omega_for_limiter = torch.where(
+            same_sign, self._wheel_velocity_used.abs(), torch.zeros_like(self._wheel_velocity_used)
+        )
+        self._wheel_tau_speed_limit = DDSM115_TAU_PEAK * (1.0 - self._wheel_omega_for_limiter / DDSM115_NO_LOAD_SPEED)
+        self._wheel_tau_speed_limit = self._wheel_tau_speed_limit.clamp(0.0, DDSM115_TAU_PEAK)
+        self._wheel_torque_cmd = torch.maximum(
+            -self._wheel_tau_speed_limit,
+            torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
+        )
+        self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
+        self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
+        self.robot.set_joint_effort_target(self._efforts_buf, joint_ids=self._wheel_ids)
+        self.robot.write_data_to_sim()
 
     # ── Observations ─────────────────────────────────────────────────────────
 
@@ -337,7 +384,7 @@ class NNDriveEnv(PureNNBalanceEnv):
             self._commands.v_cmd,
             self._commands.w_cmd,
             cg_pos_norm,
-            self._action_processor.command_current.clone(),
+            self._previous_current_observation(),
             self._cg_processor.tanh_action.clone(),
             roll_m,
             roll_rate_m,
@@ -345,6 +392,22 @@ class NNDriveEnv(PureNNBalanceEnv):
         obs = torch.where(self._obs_delay_samples.view(-1, 1) > 0, self._obs_delay, self._obs_now)
         self._obs_delay = self._obs_now.clone()
         return {"policy": obs}
+
+    def _previous_current_observation(self) -> torch.Tensor:
+        """Observation [prev wheel current], in the logical (pre-wiring) convention.
+
+        "command" is what the firmware can actually feed back: the policy's own
+        clamped output from the previous tick (main.c prev_wheel_current_A). "model"
+        is the motor model's post-delay/gain/deadzone/lag current, which no
+        firmware can know -- every policy trained before 2026-10-01 saw that one.
+        """
+        source = self.cfg.prev_current_obs_source
+        if source == "command":
+            i_max = self.cfg.i_max_a
+            return self._action_processor.net_current.clamp(-i_max, i_max).clone()
+        if source == "model":
+            return self._action_processor.command_current.clone()
+        raise ValueError(f"Unsupported prev_current_obs_source: {source!r} (expected 'command' or 'model')")
 
     # ── Rewards ──────────────────────────────────────────────────────────────
 
@@ -504,6 +567,20 @@ class NNDriveEnv(PureNNBalanceEnv):
         )
         self._randomize_cybergear_gains(env_ids_t)
         self._randomize_body_properties(env_ids_t)
+        self._randomize_contact_friction(env_ids_t)
+
+    def _randomize_contact_friction(self, env_ids_t: torch.Tensor) -> None:
+        """Write one pooled (static, dynamic) friction pair onto every shape of each env."""
+        if getattr(self, "_contact_friction_pool", None) is None:
+            return
+        env_ids_cpu = env_ids_t.detach().cpu()
+        pick = torch.randint(0, len(self._contact_friction_pool), (len(env_ids_cpu),))
+        pairs = self._contact_friction_pool[pick]
+        materials = self.robot.root_physx_view.get_material_properties()
+        materials[env_ids_cpu, :, 0] = pairs[:, 0:1]
+        materials[env_ids_cpu, :, 1] = pairs[:, 1:2]
+        self.robot.root_physx_view.set_material_properties(materials, env_ids_cpu)
+        self._contact_friction[env_ids_t] = pairs.to(self.device)
 
     def _randomize_cybergear_gains(self, env_ids_t: torch.Tensor) -> None:
         env_ids_cpu = env_ids_t.detach().cpu()

@@ -91,8 +91,8 @@ class PureNNBalanceEnv(StandupEnv):
         print(f"motor current bias: active, range {self.cfg.motor_bias_a_range} A")
         print(f"motor time constant: active, range {self.cfg.motor_tau_s_range} s")
         print(f"motor current limit: active, range {self.cfg.motor_current_limit_a_range} A")
-        print("obs delay: active, values {0,1}")
-        print("action delay: active, values {0,1}")
+        print(f"obs delay: values {getattr(self.cfg, 'obs_delay_steps_range', (0, 1))} policy steps")
+        print(f"action delay: values {getattr(self.cfg, 'action_delay_steps_range', (0, 1))} policy steps")
         print(f"wheel frictionloss: active, range {self.cfg.wheel_frictionloss_range}")
         if self.cfg.wheel_viscous_damping_randomization_active:
             print(f"wheel viscous damping: active, range {self.cfg.wheel_viscous_damping_range} Nm*s/rad")
@@ -104,6 +104,8 @@ class PureNNBalanceEnv(StandupEnv):
                 f"range {self.cfg.ground_static_friction_range}/{self.cfg.ground_dynamic_friction_range}, "
                 f"sampled {self._ground_static_friction:.3f}/{self._ground_dynamic_friction:.3f}"
             )
+        elif ground_mode == "per_episode":
+            print("ground static/dynamic friction: active per-episode on the robot material (see below)")
         else:
             print("ground static/dynamic friction: inactive")
         print("mass/COM/inertia/wheel radius: inactive")
@@ -441,7 +443,10 @@ class PureNNBalanceEnv(StandupEnv):
         self._termination_update_step[env_ids_t] = -1
         self._obs_now[env_ids_t] = 0.0
         self._obs_delay[env_ids_t] = 0.0
-        self._obs_delay_samples[env_ids_t] = torch.randint(0, 2, (n,), device=self.device)
+        obs_delay_lo, obs_delay_hi = getattr(self.cfg, "obs_delay_steps_range", (0, 1))
+        if not 0 <= obs_delay_lo <= obs_delay_hi <= 1:
+            raise ValueError(f"obs_delay_steps_range must lie within [0, 1], got {(obs_delay_lo, obs_delay_hi)}")
+        self._obs_delay_samples[env_ids_t] = torch.randint(obs_delay_lo, obs_delay_hi + 1, (n,), device=self.device)
         self._pitch_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(*self.cfg.pitch_bias_rad_range)
         self._apply_pure_nn_physical_randomization(env_ids_t)
         self._action_processor.reset(env_ids_t)

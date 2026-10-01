@@ -68,7 +68,11 @@ class NNDriveFixedStancePPORunnerCfg(NNDrivePPORunnerCfg):
     """Matched PPO config for the two-action fixed-stance diagnostic task."""
 
     experiment_name = "nn_drive_fixed_stance"
-    action_std_floor: list[float] = [0.15, 0.15]
+    # 0.15 -> 0.05 (2026-10-01). Policy/mean_noise_std sat pinned at 0.15 for
+    # 86-100% of every stage of the 2026-08 arms, and the 0.05 stage-5 fine-tune
+    # improved velocity tracking on all 11 benchmark scenarios
+    # (docs/experiments/2026-08-23-breakaway-and-noise-floor.md, hold-smoothness).
+    action_std_floor: list[float] = [0.05, 0.05]
 
 
 @configclass
@@ -104,4 +108,25 @@ class NNDriveFixedStanceGRUPPORunnerCfg(NNDriveFixedStancePPORunnerCfg):
         rnn_type="gru",
         rnn_hidden_dim=64,
         rnn_num_layers=1,
+    )
+
+
+@configclass
+class NNDriveFixedStanceWidePPORunnerCfg(NNDriveFixedStancePPORunnerCfg):
+    """Capacity-matched feedforward control for the GRU arm.
+
+    Same task, observation and training budget as the [64, 64] MLP; only the
+    actor is wider. [145, 145] on 13 inputs is 23,492 actor parameters against
+    the GRU actor's 23,618 (13->64 GRU + [64, 64] head), so the
+    MLP-vs-GRU comparison can separate recurrence from network size.
+    """
+
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=0.3,
+        noise_std_type="log",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[145, 145],
+        critic_hidden_dims=[128, 128],
+        activation="relu",
     )

@@ -80,6 +80,16 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # exactly at the edge of what the old policy had ever experienced.
     episode_length_s: float = 20.0
 
+    # See PureNNBalanceEnvCfg.ground_friction_randomization_mode.
+    ground_friction_randomization_mode: str = "per_episode"
+
+    # What observation [prev wheel current] carries. "command": the policy's own
+    # clamped output, which is all the firmware can feed back (main.c
+    # prev_wheel_current_A). "model": the motor model's delayed/gained/deadzoned/
+    # lagged current -- what every policy before 2026-10-01 trained on, and a
+    # train/deploy mismatch on hardware.
+    prev_current_obs_source: str = "command"
+
     # ── Terrain ───────────────────────────────────────────────────────────────
     # "flat"  → plane importer (fast, early curriculum stages)
     # "generator" → DRIVE_TERRAINS_CFG mix (bumps + inclines)

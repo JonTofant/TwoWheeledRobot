@@ -66,3 +66,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDrivePPORunnerCfg",
     },
 )
+
+# Capacity-matched MLP for the recurrent comparison: same env cfg again, actor
+# widened to the GRU actor's parameter count (see NNDriveFixedStanceWidePPORunnerCfg).
+gym.register(
+    id="Template-Twowheeledrobot-NNDriveFixedStanceWide-v0",
+    entry_point=f"{__name__}.nn_drive_env:NNDriveEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.nn_drive_env_cfg:NNDriveFixedStanceEnvCfg",
+        "rsl_rl_cfg_entry_point": (f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDriveFixedStanceWidePPORunnerCfg"),
+    },
+)
