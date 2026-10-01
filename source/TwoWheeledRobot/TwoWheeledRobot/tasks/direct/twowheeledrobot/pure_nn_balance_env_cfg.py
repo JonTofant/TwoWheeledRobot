@@ -81,18 +81,20 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     physics_broken_penalty: float = -100.0
     invalid_state_penalty: float = -100.0
 
-    # Active sim2real randomization. Wheel friction and motor response parameters
-    # are randomized around physically plausible/identified nominal values.
-    # NOT a Nm frictionloss despite the name — this goes to Isaac Lab's
-    # write_joint_friction_coefficient_to_sim, whose argument is a dimensionless
-    # coefficient bounding the resisting torque at mu_s * |F_spatial|, i.e. it
-    # scales with the transmitted constraint force. It therefore cannot be
-    # compared directly to EMB-17's 23-58 mNm measured wheel friction, and it may
-    # be modelling the same physics the current deadzone already models. Open
-    # question, see the "wheel friction modelled twice" task. Nominal 0.010.
-    wheel_frictionloss_range: tuple = (0.007, 0.013)
+    # Wheel friction is modelled ONCE, as the motor deadzone below (EMB-18).
+    # The PhysX joint friction coefficient that used to be randomized here
+    # (0.007-0.013) was removed 2026-10-01: in Isaac Sim 5 it only sets a static
+    # coefficient, and measured in sim it produced 0 mNm of breakaway torque even
+    # with the full axle load.
+    #
+    # Wheel viscous damping, MEASURED (fixed, not randomized): EMB-18 descending
+    # free-running sweeps go from 0 rpm at the ~55 mA stopping edge to the
+    # ~265 rpm plateau at ~80 mA, i.e. Kt * 25 mA = 0.019 N m balances all
+    # speed-dependent loss at ~28 rad/s -> 0.0007 N m s/rad. The previous
+    # 0.006-0.014 "estimate" was ~15x too draggy. Written per episode through
+    # the randomization path because the robot cfg's own wheel default is 0.2.
     wheel_viscous_damping_randomization_active: bool = True
-    wheel_viscous_damping_range: tuple = (0.006, 0.014)  # Nm*s/rad, DDSM115 internal damping estimate.
+    wheel_viscous_damping_range: tuple = (0.0007, 0.0007)  # N m s/rad
     # "per_run": one value for the shared ground, drawn from the seeded RNG at
     # startup -- so every stage and every benchmark of a given seed gets the SAME
     # draw (seed 42: 0.884/0.413), i.e. no randomization within a run. And the
@@ -143,44 +145,9 @@ class PureNNBalanceEnvCfg(StandupEnvCfg):
     # Provisional: n = 12 of a ~30-unit target — re-derive from EMB-18 before any
     # EXP-B result is written up.
     motor_deadzone_a_range: tuple = (0.031, 0.078)
-    # Constant per-wheel current offset, added before the deadzone is applied, so
-    # it is what would make a zero command produce torque. IDENTIFIED AS ZERO
-    # (EMB-17, 2026-08-04), measured directly in the stalled region (|command| <=
-    # 30 mA, below every unit's deadzone, so there is no back-EMF and the current
-    # loop delivers exactly what it is asked for): bias at commanded zero is
-    # -0.002 mA with a between-unit SD of 0.030 counts = 0.0074 mA at the measured
-    # 4096 counts/A, and speed is exactly 0.00 rpm on every unit and every repeat.
-    # That is ~0.0015 mNm of offset torque.
-    #
-    # Left at zero rather than given a token range: the usual "do not randomize
-    # too narrowly" argument applies to parameters whose spread is unmeasured,
-    # and this spread *is* measured, at ~7 uA. Randomizing it models nothing.
-    # Previous values were +-0.08 A (~10000x the measured SD) and briefly
-    # +-0.005 A, set before the direct measurement existed.
-    #
-    # Note this is an electromagnetic statement. A PM motor still has cogging
-    # torque at zero current, but it is position-dependent and averages to zero
-    # over a revolution, so it is not a bias term — it is why *static* breakaway
-    # is 2-3x the kinetic deadzone modelled here and is not reliably measurable.
-    motor_bias_a_range: tuple = (0.0, 0.0)
-    # Electrical/current-loop response lag, not the robot mechanical time
-    # constant. Sampled once per episode and held fixed. ASSUMED — the
-    # free-running rig cannot reach it (a load is required, EMB-18 open item).
-    # Narrowed from (0.005, 0.020): the old upper end exceeded the 15 ms control
-    # period, so one policy was trained across plants ranging from "responds
-    # within the step" to "a full step behind", which is a large unsupported
-    # variance. A wider robustness setting can still be applied from Hydra.
-    # NNDriveEnv integrates the lag every 1 ms physics substep with
-    # alpha = 1 - exp(-dt/tau). Until 2026-10-01 it ran once per 15 ms policy
-    # step, where alpha = dt/max(tau, dt) = 1 for this whole range: no lag at all.
-    # (0, 0) disables the lag and reproduces that behaviour.
-    motor_tau_s_range: tuple = (0.005, 0.010)
-    # ASSUMED. Saturation is a driver/firmware property rather than a
-    # manufacturing one, so it should be near-identical across units. Narrowed
-    # from (1.6, 2.4): the old lower end sat below i_max_a = 2.0, so those
-    # episodes clipped the policy's own maximum command and taught it that its
-    # top-end authority is unreliable.
-    motor_current_limit_a_range: tuple = (1.9, 2.1)
+    # No current bias (measured as zero, EMB-17: -0.002 mA, between-unit SD
+    # 0.0074 mA) and no separate driver current limit (the tanh scaling already
+    # bounds the command to +-i_max_a); both removed from the model 2026-10-01.
 
     pitch_bias_rad_range: tuple = (math.radians(-0.5), math.radians(0.5))
     pitch_noise_std: float = math.radians(0.15)

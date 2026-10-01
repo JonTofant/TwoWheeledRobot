@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# HISTORICAL: drives the 2026-08 arms against commit ea10426. It overrides
+# motor_tau_s_range, which no longer exists; use run_retrain_arms.sh instead.
 # Train the three paper arms (point / range / range+GRU) at additional seeds and
 # benchmark each resulting stage-5 policy under the same conditions as seed 42.
 #

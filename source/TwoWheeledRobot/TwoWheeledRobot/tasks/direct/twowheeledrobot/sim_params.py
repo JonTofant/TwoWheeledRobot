@@ -85,7 +85,9 @@ DDSM115_I_PEAK: float = 2.7                      # A, short-term command clamp
 DDSM115_TAU_RATED: float = 0.96                  # Nm, conservative training limit
 DDSM115_TAU_PEAK: float = 2.0                    # Nm, stall/short-term peak
 DDSM115_RATED_SPEED: float = 115.0 * 2.0 * math.pi / 60.0  # rad/s
-DDSM115_NO_LOAD_SPEED: float = 200.0 * 2.0 * math.pi / 60.0  # rad/s
+# Measured no-load plateau, EMB-18 free-running sweeps at the 25 V bench supply
+# (datasheet nominal is 200 +- 10 rpm). Was 200 rpm before 2026-10-01.
+DDSM115_NO_LOAD_SPEED: float = 270.0 * 2.0 * math.pi / 60.0  # rad/s
 
 # MuJoCo sim2sim plant defaults. The MuJoCo XML uses direct wheel torque motors
 # with ctrlrange=[-4, 4] Nm and wheel joint damping=0.2 Nm*s/rad.

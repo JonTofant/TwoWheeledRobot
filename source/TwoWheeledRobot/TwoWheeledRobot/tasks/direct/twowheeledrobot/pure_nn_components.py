@@ -89,7 +89,15 @@ class NormalizedObservationBuilder:
 
 
 class CurrentActionProcessor:
-    """Apply tanh current scaling, per-episode motor randomization, delay, and current-loop lag."""
+    """Apply tanh current scaling, per-episode motor randomization and command delay.
+
+    No current-loop lag is modelled: the driver's current loop is taken to be
+    much faster than the 15 ms control period. Hardware telemetry supports this
+    -- measured current reaches the command within one period once the ~30 ms
+    transport delay has passed -- and that delay is what the action/observation
+    delays model. (A 5-10 ms lag, applied once per policy step, was inert in
+    every policy trained before 2026-10-01 and was removed rather than assumed.)
+    """
 
     def __init__(self, cfg, num_envs: int, device: torch.device):
         self.cfg = cfg
@@ -103,10 +111,6 @@ class CurrentActionProcessor:
         self.left_gain = torch.ones(num_envs, device=device)
         self.right_gain = torch.ones(num_envs, device=device)
         self.deadzone = torch.zeros(num_envs, 2, device=device)
-        self.bias = torch.zeros(num_envs, 2, device=device)
-        self.tau_s = torch.full((num_envs, 2), cfg.motor_tau_s_range[0], device=device)
-        self.current_limit = torch.full((num_envs, 2), cfg.i_max_a, device=device)
-        self.motor_target = torch.zeros(num_envs, 2, device=device)
 
     def reset(self, env_ids: torch.Tensor) -> None:
         n = len(env_ids)
@@ -115,7 +119,6 @@ class CurrentActionProcessor:
         self.command_current[env_ids] = 0.0
         self.prev_command_current[env_ids] = 0.0
         self.action_delay_current[env_ids] = 0.0
-        self.motor_target[env_ids] = 0.0
         # Only 0 or 1 policy steps of delay are implemented (one buffered action).
         delay_lo, delay_hi = getattr(self.cfg, "action_delay_steps_range", (0, 1))
         if not 0 <= delay_lo <= delay_hi <= 1:
@@ -124,9 +127,6 @@ class CurrentActionProcessor:
 
         gain_lo, gain_hi = self.cfg.motor_gain_range
         dz_lo, dz_hi = self.cfg.motor_deadzone_a_range
-        bias_lo, bias_hi = self.cfg.motor_bias_a_range
-        tau_lo, tau_hi = self.cfg.motor_tau_s_range
-        limit_lo, limit_hi = self.cfg.motor_current_limit_a_range
         self.left_gain[env_ids] = torch.empty(n, device=self.device).uniform_(gain_lo, gain_hi)
         self.right_gain[env_ids] = torch.empty(n, device=self.device).uniform_(gain_lo, gain_hi)
         # One deadzone draw per wheel (columns are left/right, not POS/NEG), applied
@@ -134,18 +134,9 @@ class CurrentActionProcessor:
         # correlates at r = +0.989 across units (EMB-18), so per-direction sampling
         # would train over motors that do not exist. Do not split this into 4 draws.
         self.deadzone[env_ids] = torch.empty(n, 2, device=self.device).uniform_(dz_lo, dz_hi)
-        self.bias[env_ids] = torch.empty(n, 2, device=self.device).uniform_(bias_lo, bias_hi)
-        self.tau_s[env_ids] = torch.empty(n, 2, device=self.device).uniform_(tau_lo, tau_hi)
-        self.current_limit[env_ids] = torch.empty(n, 2, device=self.device).uniform_(limit_lo, limit_hi)
 
-    def process(self, raw_actions: torch.Tensor, dt: float, apply_lag: bool = True) -> torch.Tensor:
-        """Map one policy action to the per-wheel motor target current.
-
-        With ``apply_lag=False`` the current-loop lag is left to the caller,
-        which must then call :meth:`step_lag` once per physics substep. That is
-        the only way a lag with tau below the 15 ms policy period has any
-        effect: applied once per policy step it is a pure pass-through.
-        """
+    def process(self, raw_actions: torch.Tensor) -> torch.Tensor:
+        """Map one policy action to the per-wheel current the motor delivers."""
         self.prev_command_current = self.command_current.clone()
         self.net_current = torch.tanh(raw_actions[:, :2]) * self.cfg.i_max_a
         delayed = torch.where(self.action_delay_samples.view(-1, 1) > 0, self.action_delay_current, self.net_current)
@@ -159,23 +150,12 @@ class CurrentActionProcessor:
         self.filtered_current = self.filtered_current + delta
 
         gain = torch.stack([self.left_gain, self.right_gain], dim=1)
-        motor_target = self.filtered_current * gain + self.bias
-        motor_target = torch.sign(motor_target) * torch.clamp(motor_target.abs() - self.deadzone, min=0.0)
-        self.motor_target = torch.maximum(-self.current_limit, torch.minimum(motor_target, self.current_limit))
-
-        if apply_lag:
-            self.step_lag(dt)
-        return self.command_current
-
-    def step_lag(self, dt: float) -> torch.Tensor:
-        """Advance the first-order current loop by ``dt`` toward ``motor_target``.
-
-        Exact discretization of i' = (target - i) / tau for a target held over
-        the interval: alpha = 1 - exp(-dt / tau). tau <= 0 means no lag.
-        """
-        tau = self.tau_s
-        alpha = torch.where(tau > 0.0, 1.0 - torch.exp(-dt / tau.clamp(min=1e-9)), torch.ones_like(tau))
-        self.command_current = self.command_current + alpha * (self.motor_target - self.command_current)
+        # The command is already bounded to +-i_max_a by the tanh scaling. A
+        # randomized 1.9-2.1 A driver limit and a constant current bias (measured
+        # as zero, EMB-17) were removed 2026-10-01: in the stage-5 training
+        # distribution no wheel current ever exceeded 1.9 A.
+        motor_current = self.filtered_current * gain
+        self.command_current = torch.sign(motor_current) * torch.clamp(motor_current.abs() - self.deadzone, min=0.0)
         return self.command_current
 
     def delta_current(self) -> torch.Tensor:
@@ -820,12 +800,13 @@ class DriveReward:
         world_drift: torch.Tensor,
         terminal_penalty: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        # The policy only ever sees pos_err clamped to +-cmd_pos_err_clamp_m; the
-        # reward reads the raw drift so the bonus keeps pulling home past the
-        # clamp, all the way out to where it reaches zero.
+        # pos_err_raw cannot exceed the clamp by more than one step of travel:
+        # the reference is back-calculated against odometry every step (see
+        # CommandGenerator._apply_reference_anti_windup). A "beyond the clamp"
+        # term built on it delivered <0.03% of the alive bonus and was removed
+        # 2026-10-01; rew_hold_world_drift carries the real drift signal.
         clamp = self.cfg.cmd_pos_err_clamp_m
         pos_err = pos_err_raw.clamp(-clamp, clamp)
-        pos_far = (pos_err_raw.abs() - clamp).clamp(0.0, self.cfg.pos_err_far_max_m)
 
         vel_err = (velocity - velocity_cmd).clamp(-1.0, 1.0)
         yaw_rate_err = (yaw_rate - yaw_rate_cmd).clamp(-3.0, 3.0)
@@ -868,7 +849,6 @@ class DriveReward:
             "vel_err": -self.cfg.rew_vel_err * vel_err.pow(2),
             "yaw_rate_err": -self.cfg.rew_yaw_rate_err * yaw_rate_err.pow(2),
             "position": -self.cfg.rew_position * pos_err.pow(2),
-            "position_far": -self.cfg.rew_position_far * pos_far,
             "hold_velocity": -self.cfg.rew_hold_velocity * hold * hold_velocity.pow(2),
             "hold_position": -self.cfg.rew_hold_position * hold * pos_err.pow(2),
             # Ground-truth world drift, not the anti-windup-mutable reference
@@ -912,7 +892,9 @@ class DriveReward:
             terminal_penalty = torch.zeros_like(pitch)
         components["terminal"] = terminal_penalty
         reward = sum(components.values())
-        reward = torch.nan_to_num(reward, nan=0.0, posinf=3.0, neginf=-100.0).clamp(-100.0, 3.0)
+        # No clip: the bonuses sum to at most 2.3, and the only large negative is
+        # the terminal penalty. nan_to_num is a guard against broken physics only.
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=3.0, neginf=-100.0)
         components["total"] = reward
         return reward, components
 

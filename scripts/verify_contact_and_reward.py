@@ -215,8 +215,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # broken — the policy emits no leg actions for them to price.
     structurally_zero = {"cg_pos", "cg_rate"} if u.cfg.leg_action_mode == "fixed" else set()
     # Only a term pinned at a NON-ZERO constant is saturated. Pinned at exactly
-    # zero means inactive, which several terms are by design: position_far only
-    # bites past the 0.5 m clamp, the pitch/roll deadbands are zero inside their
+    # zero means inactive, which several terms are by design: the pitch/roll deadbands are zero inside their
     # bands, and the CyberGear terms are structurally zero with the legs fixed.
     # Flagging those would train the reader to ignore this check.
     dead = {

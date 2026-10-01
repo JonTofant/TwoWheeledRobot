@@ -278,18 +278,15 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     rew_vel_err: float = 1.0  # on vel_err clamped to +-1 m/s
     rew_yaw_rate_err: float = 0.15  # on yaw_rate_err clamped to +-3 rad/s
     rew_position: float = 3.0  # on clamped pos_err (max 0.75 at the 0.5 m clamp)
-    # Linear penalty on drift beyond the observation clamp, bounded so that
-    # drifting can never become more expensive than falling (max 0.6/step).
-    rew_position_far: float = 0.4
-    pos_err_far_max_m: float = 1.5
     # Station keeping: only active while the joystick is centred, so it cannot
     # fight command tracking. 20 cm of creep costs 0.16/step, 0.2 m/s costs 0.16/step.
     rew_hold_velocity: float = 4.0
     rew_hold_position: float = 4.0
-    # True world-frame displacement from the spawn point, gated to hold
-    # episodes only (driving away from spawn on command is correct and must
-    # not be penalized -- this is NOT a replacement for rew_position_far,
-    # which stays reference-relative and driving-agnostic).
+    # True world-frame displacement from where the robot was when the command
+    # last went to zero (latched at the start of each hold), gated to hold
+    # periods only. Until 2026-10-01 it was measured from the episode SPAWN
+    # point, so after any commanded driving it pulled toward a spot the policy
+    # cannot observe, and it sat flat at the 1 m clamp on 7.5% of hold steps.
     #
     # hold_position penalizes pos_err against pos_ref, but
     # CommandGenerator._apply_reference_anti_windup lets pos_ref permanently
@@ -300,7 +297,7 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # invisible to hold_position/pos_err, even though scripts/benchmark_nn_drive.py's
     # ground-truth world_drift_m metric (and the stage benchmark gate that reads
     # it) sees it. This term reads the same ground-truth root_pos_w vs
-    # spawn_pos_xy so training pressure matches what the gate actually checks.
+    # a latched hold position so training pressure matches what the gate checks.
     # Never exposed to the policy observation -- a real robot has no
     # ground-truth world position either, only the same odometry the reward
     # anti-windup already accounts for.
@@ -535,4 +532,17 @@ class NNDriveFixedStanceEnvCfg(NNDriveEnvCfg):
     # d = 0.999 against <=0.29 for all others), which is the failure mode to
     # avoid here. +-1 mm is 0.6 mm whole-robot, ~0.45 deg of trim, negligible
     # beside the +-3 deg sensor bias. ASSUMED, not IDENTIFIED, for section 2.4.
-    com_offset_y_range_m: tuple = (-0.001, 0.001)
+    com_offset_y_range_m: tuple = (0.0, 0.0)
+    # The +-1 mm above was dropped 2026-10-01 for exactly the reason given: it is
+    # negligible beside the +-3 deg IMU bias and only adds a parameter to report.
+    # Vertical COM randomization (com_offset_z_range_m) stays.
+
+    # Legs are pinned, so CyberGear stiffness barely matters; fixing it at the
+    # firmware's kp=30/kd=3 in every arm leaves the wheel-actuator model as the
+    # ONLY difference between the point and range arms. (Was +-5%, and only in
+    # the range arms.)
+    cg_kp_range: tuple = (30.0, 30.0)
+    cg_kd_range: tuple = (3.0, 3.0)
+    # Leg-motion reward terms are identically zero with the legs pinned.
+    rew_cg_pos: float = 0.0
+    rew_cg_rate: float = 0.0

@@ -36,7 +36,6 @@ class PureNNBalanceEnv(StandupEnv):
     def __init__(self, cfg: PureNNBalanceEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self._wheel_sign = torch.tensor([-1.0, 1.0], device=self.device, dtype=torch.float32)
-        self._sampled_wheel_frictionloss = torch.zeros(self.num_envs, 2, device=self.device)
         self._sampled_wheel_viscous_damping = torch.zeros(self.num_envs, 2, device=self.device)
         self._randomization_debug_reset_count = 0
         self._yaw_reference = torch.zeros(self.num_envs, device=self.device)
@@ -88,12 +87,8 @@ class PureNNBalanceEnv(StandupEnv):
         print("ACTIVE RANDOMIZATION SUMMARY")
         print(f"motor gain: active, range {self.cfg.motor_gain_range}")
         print(f"motor deadzone: active, range {self.cfg.motor_deadzone_a_range} A")
-        print(f"motor current bias: active, range {self.cfg.motor_bias_a_range} A")
-        print(f"motor time constant: active, range {self.cfg.motor_tau_s_range} s")
-        print(f"motor current limit: active, range {self.cfg.motor_current_limit_a_range} A")
         print(f"obs delay: values {getattr(self.cfg, 'obs_delay_steps_range', (0, 1))} policy steps")
         print(f"action delay: values {getattr(self.cfg, 'action_delay_steps_range', (0, 1))} policy steps")
-        print(f"wheel frictionloss: active, range {self.cfg.wheel_frictionloss_range}")
         if self.cfg.wheel_viscous_damping_randomization_active:
             print(f"wheel viscous damping: active, range {self.cfg.wheel_viscous_damping_range} Nm*s/rad")
         else:
@@ -113,15 +108,7 @@ class PureNNBalanceEnv(StandupEnv):
     def _apply_pure_nn_physical_randomization(self, env_ids_t: torch.Tensor) -> None:
         env_ids_cpu = env_ids_t.detach().cpu()
         n = len(env_ids_t)
-        n_joints = self._default_joint_damping.shape[1]
         wheel_cols = [self._left_wheel_ids[0], self._right_wheel_ids[0]]
-
-        fric_lo, fric_hi = self.cfg.wheel_frictionloss_range
-        wheel_frictionloss = torch.empty(n, 2, device=self.device).uniform_(fric_lo, fric_hi)
-        self._sampled_wheel_frictionloss[env_ids_t] = wheel_frictionloss
-        fric = torch.zeros(n, n_joints, device=self.device)
-        fric[:, wheel_cols] = wheel_frictionloss
-        self.robot.write_joint_friction_coefficient_to_sim(fric, env_ids=env_ids_cpu)
 
         if self.cfg.wheel_viscous_damping_randomization_active:
             damp_lo, damp_hi = self.cfg.wheel_viscous_damping_range
@@ -143,7 +130,6 @@ class PureNNBalanceEnv(StandupEnv):
         self._randomization_debug_reset_count += 1
         print(f"[PureNNBalanceEnv] reset randomization sample #{self._randomization_debug_reset_count}")
         print(f"  env_ids={ids.detach().cpu().tolist()}")
-        print(f"  wheel_frictionloss_LR={self._sampled_wheel_frictionloss[ids].detach().cpu().tolist()}")
         if self.cfg.wheel_viscous_damping_randomization_active:
             print(f"  wheel_viscous_damping_LR={self._sampled_wheel_viscous_damping[ids].detach().cpu().tolist()}")
         print(
@@ -151,8 +137,6 @@ class PureNNBalanceEnv(StandupEnv):
             f"{torch.stack([self._action_processor.left_gain[ids], self._action_processor.right_gain[ids]], dim=1).detach().cpu().tolist()}"
         )
         print(f"  motor_deadzone_LR={self._action_processor.deadzone[ids].detach().cpu().tolist()}")
-        print(f"  motor_tau_s_LR={self._action_processor.tau_s[ids].detach().cpu().tolist()}")
-        print(f"  motor_current_limit_LR={self._action_processor.current_limit[ids].detach().cpu().tolist()}")
 
     def _update_termination_flags(
         self,
@@ -278,7 +262,7 @@ class PureNNBalanceEnv(StandupEnv):
         zero_cg_targets = torch.max(self._cg_joint_lo, torch.min(self._cg_joint_hi, zero_cg_targets))
         self.robot.set_joint_position_target(zero_cg_targets, joint_ids=self._cg_ids)
 
-        self._wheel_i_cmd = self._action_processor.process(actions, self.step_dt)
+        self._wheel_i_cmd = self._action_processor.process(actions)
         self._wheel_i_des = self._action_processor.net_current.clone()
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()

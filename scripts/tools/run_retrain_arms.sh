@@ -6,14 +6,21 @@
 #
 #   obs[9:10]        policy's own clamped command (firmware semantics), not the
 #                    motor model's current          prev_current_obs_source=command
-#   current lag      integrated every 1 ms substep; tau 5-10 ms now has an effect
-#   left wheel       torque-speed envelope uses the logical wheel velocity
+#   current lag      removed (it was inert); latency is the action/obs delays
+#   left wheel       torque-speed envelope uses the logical wheel velocity,
+#                    evaluated every 1 ms physics substep
 #   tire friction    effective static 0.5-1.1 / dynamic 0.4-0.9 per env per
 #                    episode (was one draw per run, halved by the 0.5 default
 #                    robot material)              ground_friction_randomization_mode=per_episode
 #   noise floor      action std floor 0.05 (was 0.15)
 #   selection        fixed budget, last checkpoint of each stage (was a gated
 #                    shortlist benchmarked on the same seed the paper reports)
+#   removed          inert: joint friction coefficient, current bias, randomized
+#                    current limit, "position_far" reward, reward clip;
+#                    negligible: +-1 mm COM fore-aft, CyberGear gain randomization
+#   wheel damping    0.0007 N m s/rad measured (was 0.006-0.014 assumed, ~15x)
+#   no-load speed    270 rpm measured (was 200 rpm datasheet)
+#   hold drift       measured from where the hold began, not the episode spawn
 #   arm D            [145,145] MLP, capacity-matched to the GRU actor
 #   benchmark        256 envs, GRU state reset per scenario, separate output dir
 #
@@ -45,16 +52,13 @@ BENCH_STEPS=${RETRAIN_BENCH_STEPS:-1000}
 ARMS=${RETRAIN_ARMS:-"A B C D"}
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
-# Arm A collapses the actuator ranges (wheel motors and CyberGear gains) to
-# their point estimates. Everything else -- friction, delays, sensors, body --
-# is randomized identically in every arm.
+# Arm A collapses the wheel-actuator ranges (gain, deadzone) to their point
+# estimates. That is now the ONLY difference from arm B: CyberGear gains are
+# fixed at 30/3 in every arm, and friction, delays, sensors and body are
+# randomized identically.
 POINT_OVERRIDES=(
     "env.motor_gain_range=[1.0,1.0]"
     "env.motor_deadzone_a_range=[0.0534,0.0534]"
-    "env.motor_tau_s_range=[0.0075,0.0075]"
-    "env.motor_current_limit_a_range=[2.0,2.0]"
-    "env.cg_kp_range=[30.0,30.0]"
-    "env.cg_kd_range=[3.0,3.0]"
 )
 
 MLP_TASK=Template-Twowheeledrobot-NNDriveFixedStance-v0
@@ -76,20 +80,18 @@ want = {
     "point": {
         "motor_gain_range": (1.0, 1.0),
         "motor_deadzone_a_range": (0.0534, 0.0534),
-        "motor_tau_s_range": (0.0075, 0.0075),
-        "motor_current_limit_a_range": (2.0, 2.0),
-        "cg_kp_range": (30.0, 30.0),
-        "cg_kd_range": (3.0, 3.0),
     },
     "range": {
         "motor_gain_range": (0.97, 1.03),
         "motor_deadzone_a_range": (0.031, 0.078),
-        "motor_tau_s_range": (0.005, 0.010),
-        "motor_current_limit_a_range": (1.9, 2.1),
-        "cg_kp_range": (28.5, 31.5),
-        "cg_kd_range": (2.85, 3.15),
     },
 }[expect]
+removed = ["motor_tau_s_range", "wheel_frictionloss_range", "motor_bias_a_range",
+           "motor_current_limit_a_range", "rew_position_far", "pos_err_far_max_m"]
+present = [k for k in removed if k in cfg]
+if present:
+    print(f"CONFIG MISMATCH: removed parameters still present: {present}")
+    sys.exit(1)
 want.update({
     "prev_current_obs_source": "command",
     "ground_friction_randomization_mode": "per_episode",
@@ -97,6 +99,12 @@ want.update({
     "ground_dynamic_friction_range": (0.4, 0.9),
     "obs_delay_steps_range": (0, 1),
     "action_delay_steps_range": (0, 1),
+    "cg_kp_range": (30.0, 30.0),
+    "cg_kd_range": (3.0, 3.0),
+    "com_offset_y_range_m": (0.0, 0.0),
+    "wheel_viscous_damping_range": (0.0007, 0.0007),
+    "rew_cg_pos": 0.0,
+    "rew_cg_rate": 0.0,
 })
 bad = []
 for key, value in want.items():

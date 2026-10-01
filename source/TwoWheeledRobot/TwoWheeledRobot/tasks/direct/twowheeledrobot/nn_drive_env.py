@@ -88,6 +88,11 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._roll_bias = torch.zeros(self.num_envs, device=self.device)
         self._roll_rate_bias = torch.zeros(self.num_envs, device=self.device)
 
+        # Station-keeping reference for rew_hold_world_drift: latched where the
+        # robot is when the command goes to zero, not at the episode spawn.
+        self._hold_ref_xy = torch.zeros(self.num_envs, 2, device=self.device)
+        self._hold_prev = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+
         # Continuous force-noise state (filtered white noise on the platform).
         self._force_noise = torch.zeros(self.num_envs, 2, device=self.device)
         self._force_noise_amp = torch.zeros(self.num_envs, device=self.device)
@@ -286,10 +291,9 @@ class NNDriveEnv(PureNNBalanceEnv):
         self.robot.set_joint_position_target(cg_targets, joint_ids=self._cg_ids)
 
         # Wheel current path. The per-unit motor model (delay, gain, deadzone,
-        # limit) runs once per policy step; the current-loop lag and the
-        # torque-speed envelope run every physics substep in _apply_action, so a
-        # tau below the 15 ms policy period actually filters the current.
-        self._action_processor.process(wheel_actions, self.step_dt, apply_lag=False)
+        # limit) runs once per policy step; the torque-speed envelope runs every
+        # physics substep in _apply_action, against the current wheel speed.
+        self._wheel_i_cmd = self._action_processor.process(wheel_actions)
         self._wheel_i_des = self._action_processor.net_current.clone()
 
         # Discrete disturbances (pushes/payload) + continuous force noise.
@@ -315,8 +319,7 @@ class NNDriveEnv(PureNNBalanceEnv):
                 self._last_disturbance_torque.zero_()
 
     def _apply_action(self) -> None:
-        """Per physics substep: current-loop lag, then the DDSM115 torque envelope."""
-        self._wheel_i_cmd = self._action_processor.step_lag(self.physics_dt)
+        """Per physics substep: the DDSM115 torque-speed envelope at the current wheel speed."""
         self._wheel_tau_current = self._wheel_i_cmd * DDSM115_KT
         self._wheel_velocity_raw = self.robot.data.joint_vel[:, self._wheel_ids].clone()
         # Logical wheel velocity. The left joint is mirrored in the USD, so its
@@ -422,10 +425,16 @@ class NNDriveEnv(PureNNBalanceEnv):
         pos_err = pos_err_raw.clamp(-self.cfg.cmd_pos_err_clamp_m, self.cfg.cmd_pos_err_clamp_m)
         # Ground truth, immune to the reference anti-windup absorbing drift
         # (see rew_hold_world_drift). Never fed to the observation -- a real
-        # robot has no ground-truth world position either.
-        world_drift = torch.linalg.vector_norm(
-            self.robot.data.root_pos_w[:, :2] - self._spawn_pos_xy, dim=1
+        # robot has no ground-truth world position either. Measured from where
+        # the current hold began.
+        hold_mask = (self._commands.v_cmd.abs() < self.cfg.hold_velocity_cmd_threshold_mps) & (
+            self._commands.w_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps
         )
+        root_xy = self.robot.data.root_pos_w[:, :2]
+        hold_start = hold_mask & ~self._hold_prev
+        self._hold_ref_xy[hold_start] = root_xy[hold_start]
+        self._hold_prev = hold_mask
+        world_drift = torch.linalg.vector_norm(root_xy - self._hold_ref_xy, dim=1)
         # yaw_err_cos alone is enough for the 1-cos(error) reward shape (an
         # even function of the error -- sign doesn't matter for "how far off").
         _, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
@@ -451,9 +460,6 @@ class NNDriveEnv(PureNNBalanceEnv):
         # asserts the per-step reward stays non-negative. extras["log"] only keeps
         # means, and a mean cannot show a single env going negative.
         self._last_reward_components = components
-        hold_mask = (self._commands.v_cmd.abs() < self.cfg.hold_velocity_cmd_threshold_mps) & (
-            self._commands.w_cmd.abs() < self.cfg.hold_yaw_rate_cmd_threshold_radps
-        )
         self._episode_reward += reward
         self.extras["log"] = {
             "reward": reward.mean(),
@@ -536,6 +542,7 @@ class NNDriveEnv(PureNNBalanceEnv):
         self.robot.write_root_pose_to_sim(root_state[:, :7], env_ids_t)
         self.robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids_t)
         self._spawn_pos_xy[env_ids_t] = root_state[:, :2]
+        self._hold_prev[env_ids_t] = False
         self._yaw_reference[env_ids_t] = yaw
         self._physics_broken_z[env_ids_t] = root_state[:, 2] - 1.0
 

@@ -105,8 +105,6 @@ def _draws(unwrapped) -> dict[str, torch.Tensor]:
         "motor_gain_right": proc.right_gain,
         "motor_deadzone_mean_a": proc.deadzone.mean(dim=1),
         "motor_deadzone_asym_a": (proc.deadzone[:, 0] - proc.deadzone[:, 1]).abs(),
-        "motor_tau_mean_s": proc.tau_s.mean(dim=1),
-        "motor_current_limit_mean_a": proc.current_limit.mean(dim=1),
         "action_delay_samples": proc.action_delay_samples.float(),
         "cg_kp_mean": stiffness[:, cg_cols].mean(dim=1),
         "cg_kd_mean": damping[:, cg_cols].mean(dim=1),
