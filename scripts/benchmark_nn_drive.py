@@ -29,6 +29,11 @@ parser.add_argument("--num_steps", type=int, default=1000, help="1000 steps = 15
 parser.add_argument("--terrain", type=str, default="flat", choices=["flat", "generator"])
 parser.add_argument("--seed", type=int, default=42, help="Fixed environment and policy seed")
 parser.add_argument(
+    "--independent-scenario-seeds",
+    action="store_true",
+    help="Reseed each scenario with base seed + its index in the shared scenario contract.",
+)
+parser.add_argument(
     "--scenarios",
     nargs="+",
     choices=tuple(SCENARIOS),
@@ -222,6 +227,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     results: dict[str, dict[str, float]] = {}
     for name in args_cli.scenarios:
+        if args_cli.independent_scenario_seeds:
+            scenario_seed = args_cli.seed + list(SCENARIOS).index(name)
+            random.seed(scenario_seed)
+            torch.manual_seed(scenario_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(scenario_seed)
         stage, dist_kind, v_cmd, w_cmd = SCENARIOS[name]
         live_cfg = env.unwrapped.cfg
         live_cfg.curriculum_stage = stage
@@ -248,6 +259,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         num_steps=args_cli.num_steps,
         scenarios=results,
     )
+    if args_cli.independent_scenario_seeds:
+        payload["scenario_seeds"] = {
+            name: args_cli.seed + list(SCENARIOS).index(name) for name in results
+        }
     if args_cli.json_output is not None:
         args_cli.json_output.parent.mkdir(parents=True, exist_ok=True)
         args_cli.json_output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

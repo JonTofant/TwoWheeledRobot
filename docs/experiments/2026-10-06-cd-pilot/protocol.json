@@ -1,0 +1,61 @@
+{
+  "status": "ready for preflight; no pilot training launched yet",
+  "pilot_tag": "r3_pilot",
+  "arms": {
+    "C": "range GRU",
+    "D": "capacity-matched range MLP"
+  },
+  "training_seed": 43,
+  "initialization": "fresh for both C and D; recovery model is a separate deployment reference",
+  "num_envs": 4096,
+  "stage_update_budgets": [
+    300,
+    350,
+    200,
+    250,
+    150
+  ],
+  "exploration_floor": [
+    0.15,
+    0.15
+  ],
+  "initial_learning_rate": 0.0005,
+  "lr_schedule": "adaptive (unchanged); record actual LR",
+  "physical_and_reward_fixes": "unchanged corrected r2 configuration",
+  "curriculum_promotion": "fixed budget and last checkpoint within stages, preserving equal stage budgets",
+  "deployment_selection": {
+    "rule": "Same four predetermined candidates for each arm; select the lowest existing checkpoint_score only among candidates passing all stage-5 gates on held-out validation. No hardware-based selection and no silent gate-failure fallback.",
+    "candidates": [
+      "last checkpoint of stage 4",
+      "first saved checkpoint at or after 25% of stage-5 updates",
+      "first saved checkpoint at or after 50% of stage-5 updates",
+      "last checkpoint of stage 5"
+    ],
+    "validation_base_seed": 1001,
+    "scenarios": "all 11 benchmark scenarios",
+    "terrain": "generator",
+    "num_envs": 64,
+    "num_steps": 1000,
+    "benchmark_condition": "common range environment for all arms",
+    "if_none_pass": "record failed pilot arm with final-checkpoint metrics; do not omit it from the comparison or start multi-seed replication",
+    "scenario_seeding": "base seed plus canonical index in SCENARIOS; independently reset torch/Python RNG and recurrent state before each scenario"
+  },
+  "reporting": {
+    "fixed_budget_final": "retain and report final-checkpoint results as a separate comparison",
+    "selected_for_deployment": "report selected iteration, validation score, gate results and hash; no mixing with final-checkpoint r2 averages",
+    "test_base_seed": 2001,
+    "test_distributions": [
+      "range",
+      "nominal"
+    ],
+    "hardware": "same firmware and motor settings, only generated policy changes; log exact model hash; repeated matched protocol, randomize arm order",
+    "old_r2": "preserve all seeds including failed C42",
+    "replication": "Keep the planned 42/43/44 comparison, with no seed removal. Seed 43 pilot is development data; disclose tuning and use separate held-out evaluation. Freeze protocol before seeds 42 and 44."
+  },
+  "implementation_note": "Implemented by scripts/tools/run_cd_pilot.sh, run_retrain_arms.sh optional pilot mode, and select_cd_pilot_checkpoint.py. Fixed last-checkpoint curriculum promotion; four predetermined post-training candidates; separate validation/test; failed arms keep final metrics and do not export. Stage-5 selected_checkpoint.json remains the fixed-budget final; deployment_selection.json records the held-out choice.",
+  "provenance": "Commit the exact source, configuration and selection protocol before launch; archive resolved settings and model hashes. Preserve unrelated Paper and embedded Results work.",
+  "total_update_budget": 1250,
+  "num_steps_per_env": 64,
+  "checkpoint_save_interval": 25,
+  "budget_rationale": "Shortened pilot only: keep stages 1-4 unchanged, halve stage 5. This reduces updates by 10.7% versus r2; adequacy is provisional and must be assessed on frozen checkpoints, not training logs. No training launched."
+}

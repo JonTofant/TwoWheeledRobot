@@ -47,6 +47,11 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--reset_optimizer",
+    action="store_true",
+    help="Warm-start model weights without restoring optimizer state or its saved learning rate.",
+)
+parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
@@ -227,7 +232,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        runner.load(resume_path, load_optimizer=not args_cli.reset_optimizer)
 
     enforce_action_std_floor(runner, getattr(agent_cfg, "action_std_floor", None))
 

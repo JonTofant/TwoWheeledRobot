@@ -68,11 +68,12 @@ class NNDriveFixedStancePPORunnerCfg(NNDrivePPORunnerCfg):
     """Matched PPO config for the two-action fixed-stance diagnostic task."""
 
     experiment_name = "nn_drive_fixed_stance"
-    # 0.15 -> 0.05 (2026-10-01). Policy/mean_noise_std sat pinned at 0.15 for
-    # 86-100% of every stage of the 2026-08 arms, and the 0.05 stage-5 fine-tune
-    # improved velocity tracking on all 11 benchmark scenarios
-    # (docs/experiments/2026-08-23-breakaway-and-noise-floor.md, hold-smoothness).
-    action_std_floor: list[float] = [0.05, 0.05]
+    # Restore the hardware-proven August exploration floor (2026-10-06).
+    # The r2 0.05 floor improved simulated tracking, but C43 regressed on the
+    # physical robot. Its causal contribution is unproven: r2 also changed the
+    # plant and checkpoint selection. This is training exploration, not an
+    # inference current limit. Keep the same floor for all comparison arms.
+    action_std_floor: list[float] = [0.15, 0.15]
 
 
 @configclass

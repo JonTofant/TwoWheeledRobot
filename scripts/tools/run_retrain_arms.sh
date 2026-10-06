@@ -12,7 +12,8 @@
 #   tire friction    effective static 0.5-1.1 / dynamic 0.4-0.9 per env per
 #                    episode (was one draw per run, halved by the 0.5 default
 #                    robot material)              ground_friction_randomization_mode=per_episode
-#   noise floor      action std floor 0.05 (was 0.15)
+#   noise floor      restored to 0.15 after C43's hardware regression;
+#                    the archived r2 run used 0.05
 #   selection        fixed budget, last checkpoint of each stage (was a gated
 #                    shortlist benchmarked on the same seed the paper reports)
 #   removed          inert: joint friction coefficient, current bias, randomized
@@ -40,7 +41,8 @@ fi
 
 REPO=/workspace/TwoWheeledRobot
 PY=/isaac-sim/python.sh
-TAG=${RETRAIN_TAG:-r2}
+# Changed defaults must not overwrite the completed r2 benchmark records.
+TAG=${RETRAIN_TAG:-r3}
 RUN_ROOT=$REPO/logs/rsl_rl/nn_drive_fixed_stance
 LOG_DIR=$REPO/logs/retrain_${TAG}_$(date +%Y-%m-%d)
 DATA_DIR=${RETRAIN_DATA_DIR:-$REPO/docs/paper/figures/data_${TAG}}
@@ -50,6 +52,17 @@ NUM_ENVS=${RETRAIN_NUM_ENVS:-4096}
 BENCH_ENVS=${RETRAIN_BENCH_ENVS:-256}
 BENCH_STEPS=${RETRAIN_BENCH_STEPS:-1000}
 ARMS=${RETRAIN_ARMS:-"A B C D"}
+PILOT_PROTOCOL=${RETRAIN_PILOT_PROTOCOL:-}
+FAILURES=0
+if [ -n "$PILOT_PROTOCOL" ]; then
+    if [ "$ARMS" != "C D" ] || [ "${SEEDS[*]}" != "43" ] || \
+       [ "$ITERATIONS" != "300 350 200 250 150" ] || [ "$NUM_ENVS" != "4096" ]; then
+        echo "Pilot settings must match C/D, seed 43, 4096 envs, 1250 updates" >&2
+        exit 2
+    fi
+    $PY "$REPO/scripts/tools/select_cd_pilot_checkpoint.py" \
+        --protocol "$PILOT_PROTOCOL" --check-only || exit 2
+fi
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
 # Arm A collapses the wheel-actuator ranges (gain, deadzone) to their point
@@ -113,8 +126,10 @@ for key, value in want.items():
     if got != value:
         bad.append(f"{key}: got {got}, expected {value}")
 floor = tuple(agent.get("action_std_floor") or ())
-if floor != (0.05, 0.05):
-    bad.append(f"action_std_floor: got {floor}, expected (0.05, 0.05)")
+if floor != (0.15, 0.15):
+    bad.append(f"action_std_floor: got {floor}, expected (0.15, 0.15)")
+if agent.get("num_steps_per_env") != 64 or agent.get("save_interval") != 25:
+    bad.append("rollout/save interval must be 64/25")
 if bad:
     print("CONFIG MISMATCH (" + expect + "):\n  " + "\n  ".join(bad))
     sys.exit(1)
@@ -133,6 +148,9 @@ train_arm() {
     local prefix="${TAG}_${slug}_s${seed}"
     local log="$LOG_DIR/${prefix}_train.log"
     STAGE5_DIR=""
+    local extra_train=()
+    # The pilot exports only a gate-passing held-out validation choice later.
+    [ -n "$PILOT_PROTOCOL" ] && extra_train+=(--skip-export)
 
     say "START train arm $letter ($slug) seed $seed -> $log"
     # shellcheck disable=SC2086
@@ -145,6 +163,7 @@ train_arm() {
         --selection last \
         --seed "$seed" \
         --headless \
+        "${extra_train[@]}" \
         "$@" >"$log" 2>&1
     local rc=$?
     if [ $rc -ne 0 ]; then
@@ -152,8 +171,7 @@ train_arm() {
         return $rc
     fi
 
-    local stage1 stage5
-    stage1=$(latest_run "$prefix" 1)
+    local stage5 stage run_dir
     stage5=$(latest_run "$prefix" 5)
     if [ -z "$stage5" ]; then
         say "FAIL arm $letter seed $seed: no stage-5 run directory found"
@@ -161,13 +179,16 @@ train_arm() {
     fi
     say "OK train arm $letter seed $seed -> $(basename "$stage5")"
     local verdict
-    if verdict=$(verify_run "$stage1" "$kind" 2>&1); then
-        say "  $(echo "$verdict" | tail -1)"
-    else
-        say "FAIL arm $letter seed $seed trained the wrong distribution:"
-        say "  $(echo "$verdict" | tail -12)"
-        return 1
-    fi
+    for stage in 1 2 3 4 5; do
+        run_dir=$(latest_run "$prefix" "$stage")
+        if verdict=$(verify_run "$run_dir" "$kind" 2>&1); then
+            say "  stage $stage: $(echo "$verdict" | tail -1)"
+        else
+            say "FAIL arm $letter seed $seed stage $stage trained the wrong configuration:"
+            say "  $(echo "$verdict" | tail -12)"
+            return 1
+        fi
+    done
     STAGE5_DIR="$stage5"
 }
 
@@ -212,25 +233,48 @@ bench_arm() {
 
 wants() { [[ " $ARMS " == *" $1 "* ]]; }
 
+run_arm() {
+    local letter=$1 slug=$2 seed=$3 task=$4 kind=$5
+    shift 5
+    if ! train_arm "$letter" "$slug" "$seed" "$task" "$kind" "$@"; then
+        FAILURES=$((FAILURES + 1))
+        return
+    fi
+    if [ -n "$PILOT_PROTOCOL" ]; then
+        local prefix="${TAG}_${slug}_s${seed}" stage4 log
+        stage4=$(latest_run "$prefix" 4)
+        log="$LOG_DIR/arm_${letter}_s${seed}_selection.log"
+        say "START held-out selection/test/export arm $letter -> $log"
+        if $PY "$REPO/scripts/tools/select_cd_pilot_checkpoint.py" \
+            --protocol "$PILOT_PROTOCOL" --arm "$letter" --stage4 "$stage4" \
+            --stage5 "$STAGE5_DIR" --output "$DATA_DIR/arm_${letter}_s${seed}" >"$log" 2>&1; then
+            say "OK held-out selection/test/export arm $letter"
+        else
+            say "FAIL held-out selection/test/export arm $letter -- see $log"
+            FAILURES=$((FAILURES + 1))
+        fi
+    else
+        if [ "$letter" = A ]; then
+            bench_arm "$letter" "$seed" "$STAGE5_DIR" "$task" nominal "$@" || FAILURES=$((FAILURES + 1))
+        fi
+        bench_arm "$letter" "$seed" "$STAGE5_DIR" "$task" range || FAILURES=$((FAILURES + 1))
+    fi
+}
+
 say "=== retrain ($TAG) started for seeds: ${SEEDS[*]}, arms: $ARMS, iterations: $ITERATIONS ==="
 say "repo commit: $(cd "$REPO" && git rev-parse --short HEAD) $(cd "$REPO" && git status --porcelain --untracked-files=no | wc -l) dirty files"
 
 for seed in "${SEEDS[@]}"; do
     say "--- seed $seed ---"
-    if wants A && train_arm A point "$seed" "$MLP_TASK" point "${POINT_OVERRIDES[@]}"; then
-        bench_arm A "$seed" "$STAGE5_DIR" "$MLP_TASK" nominal "${POINT_OVERRIDES[@]}"
-        bench_arm A "$seed" "$STAGE5_DIR" "$MLP_TASK" range
-    fi
-    if wants B && train_arm B range "$seed" "$MLP_TASK" range; then
-        bench_arm B "$seed" "$STAGE5_DIR" "$MLP_TASK" range
-    fi
-    if wants C && train_arm C range_gru "$seed" "$GRU_TASK" range; then
-        bench_arm C "$seed" "$STAGE5_DIR" "$GRU_TASK" range
-    fi
-    if wants D && train_arm D range_wide "$seed" "$WIDE_TASK" range; then
-        bench_arm D "$seed" "$STAGE5_DIR" "$WIDE_TASK" range
-    fi
+    wants A && run_arm A point "$seed" "$MLP_TASK" point "${POINT_OVERRIDES[@]}"
+    wants B && run_arm B range "$seed" "$MLP_TASK" range
+    wants C && run_arm C range_gru "$seed" "$GRU_TASK" range
+    wants D && run_arm D range_wide "$seed" "$WIDE_TASK" range
     say "--- seed $seed complete ---"
 done
 
+if [ "$FAILURES" -ne 0 ]; then
+    say "=== retrain ($TAG) finished with $FAILURES failures ==="
+    exit 1
+fi
 say "=== retrain ($TAG) finished ==="
