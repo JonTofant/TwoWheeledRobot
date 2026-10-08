@@ -1,0 +1,83 @@
+{
+  "old": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-08-10_23-51-29_range_gru_stage5/model_775.pt",
+    "sha256": "7245dd0070822998c82555474b27701718008c7ca4f5d6441fafb5c8cd41c273",
+    "replay_adjacent_delta_A": 0.055454909801483154,
+    "replay_window_seq918_948_delta_A": 0.056868650019168854,
+    "direct_history_jacobian_radius_median": 0.16250666975975037,
+    "direct_history_jacobian_radius_max": 0.920547604560852,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "recovery": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_07-07-54_gru_recovery_floor015_s43_2026-10-06_retry1_stage5/model_924.pt",
+    "sha256": "014f3ea211d1b8d30ec979cffe6c622333e1294231fe061cd26c06990e51e1ab",
+    "replay_adjacent_delta_A": 0.0515793114900589,
+    "replay_window_seq918_948_delta_A": 0.09602866321802139,
+    "direct_history_jacobian_radius_median": 0.1726519614458084,
+    "direct_history_jacobian_radius_max": 0.6724441647529602,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "stage1": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_10-16-41_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage1/model_299.pt",
+    "sha256": "e4829e7bb3d52a7f3aca630f87eb7d4e944c0158fc1325c4af747a841269c935",
+    "replay_adjacent_delta_A": 0.3689415156841278,
+    "replay_window_seq918_948_delta_A": 0.6661319732666016,
+    "direct_history_jacobian_radius_median": 0.6361212730407715,
+    "direct_history_jacobian_radius_max": 1.426742672920227,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "stage2": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_10-44-50_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage2/model_648.pt",
+    "sha256": "a793a77ccac3d2721538a86354f28a5a62300a6c50e179070f61f92458b24214",
+    "replay_adjacent_delta_A": 0.14259237051010132,
+    "replay_window_seq918_948_delta_A": 0.29722458124160767,
+    "direct_history_jacobian_radius_median": 0.8280664086341858,
+    "direct_history_jacobian_radius_max": 1.5616751909255981,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "stage3": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_11-18-50_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage3/model_847.pt",
+    "sha256": "3d140ee6935642c4397ed79ee6efc11dd0ef5d61b5c77f9d975c92c6d05580f1",
+    "replay_adjacent_delta_A": 0.17175039649009705,
+    "replay_window_seq918_948_delta_A": 0.4321812689304352,
+    "direct_history_jacobian_radius_median": 0.9224109053611755,
+    "direct_history_jacobian_radius_max": 1.865928053855896,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "stage4": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_11-38-15_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage4/model_1096.pt",
+    "sha256": "c6bb812b311104f54856e1019a258f4be79aaa5644136aeea892b37935b0fcd2",
+    "replay_adjacent_delta_A": 0.18702968955039978,
+    "replay_window_seq918_948_delta_A": 0.5114561319351196,
+    "direct_history_jacobian_radius_median": 0.8728992938995361,
+    "direct_history_jacobian_radius_max": 1.841127872467041,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "stage5": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_12-07-53_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage5/model_1245.pt",
+    "sha256": "2af90f4e9dff94c9e28bd99be0fa8704a81837e31d6d4e6bc9695091a9b55002",
+    "replay_adjacent_delta_A": 0.1476459801197052,
+    "replay_window_seq918_948_delta_A": 0.3405780792236328,
+    "direct_history_jacobian_radius_median": 0.9214723110198975,
+    "direct_history_jacobian_radius_max": 1.8014321327209473,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "pilot_selected": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_12-07-53_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage5/model_1150.pt",
+    "sha256": "4eec9bfce0ecd2e567a984f3e89baac0e1ed331fae75f31be8b066b256201540",
+    "replay_adjacent_delta_A": 0.17449615895748138,
+    "replay_window_seq918_948_delta_A": 0.4412657618522644,
+    "direct_history_jacobian_radius_median": 0.9074506759643555,
+    "direct_history_jacobian_radius_max": 2.0316059589385986,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  },
+  "timing_recovery": {
+    "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-07_13-38-09_gru_sensor_timing_recovery_s43_2026-10-07_stage5/model_874.pt",
+    "sha256": "c5c0ac0c3c7d76f07016f1718cf93a76f7f60733e75ba51bb6cb6e55890ea8d8",
+    "replay_adjacent_delta_A": 0.052288398146629333,
+    "replay_window_seq918_948_delta_A": 0.06297402083873749,
+    "direct_history_jacobian_radius_median": 0.1851443201303482,
+    "direct_history_jacobian_radius_max": 1.0664998292922974,
+    "note": "Open-loop on failed pilot trajectory, not an alternative physical trajectory or proof of stability."
+  }
+}

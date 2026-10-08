@@ -1,5 +1,16 @@
 # Retrain plan: paper arms "r2" (weekend of 2026-10-03)
 
+> **2026-10-07/08 regression investigation:** the fresh C pilot fell during
+> unforced hardware standing despite passing its simulation selection.
+> A further mismatch was found: full-vector observation delay also delayed the
+> locally known previous command. NNDrive now defaults to `obs_delay_mode=sensors`;
+> `legacy_full` explicitly preserves the earlier observation pipeline. The r2
+> and original pilot results remain historical artifacts of their saved source,
+> not results under this new default. Do not launch another multi-seed retrain
+> from this historical recipe before evaluating the bounded recovery and hardware
+> transfer. See [the investigation](docs/experiments/2026-10-07-hardware-regression/README.md)
+> and [the publication path](docs/experiments/2026-10-07-hardware-regression/PAPER_PATH.md).
+
 > **Pre-pilot audit completed (2026-10-06):** 52 frozen-checkpoint checks found
 > a better C42 policy at the end of stage 4; later stage-5 updates first lost
 > velocity tracking and then introduced falls. No retraining was launched.

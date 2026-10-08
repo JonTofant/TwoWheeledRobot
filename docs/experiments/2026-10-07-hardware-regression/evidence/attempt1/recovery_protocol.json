@@ -1,0 +1,60 @@
+{
+  "purpose": "Development recovery, not a new independent training seed or paper replication",
+  "tag": "gru_sensor_timing_recovery_s43_2026-10-07",
+  "source_parent": "98658ede576b64a9d19ad7715622e45a3748e59a",
+  "baseline": "/home/jon/Projects/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-08-10_23-51-29_range_gru_stage5/model_775.pt",
+  "baseline_sha256": "7245dd0070822998c82555474b27701718008c7ca4f5d6441fafb5c8cd41c273",
+  "changes": [
+    "Sensor-only measurement delay before error construction; current references, commands and previous actions remain current",
+    "Reset initializes sensor history from the first valid measurement"
+  ],
+  "retained": [
+    "13 observations / 2 ampere outputs / 64 GRU hidden values",
+    "Correct mirrored wheel torque limiter and per-substep evaluation",
+    "Per-episode contact randomization",
+    "0.0007 wheel damping, unchanged rewards, motor gain/deadzone and delay ranges",
+    "15 ms policy step, 64-step rollout, floor 0.15"
+  ],
+  "training": {
+    "seed": 43,
+    "envs": 4096,
+    "stage": 5,
+    "terrain": "generator",
+    "updates": 100,
+    "learning_rate": 5e-05,
+    "schedule": "fixed",
+    "reset_optimizer": true,
+    "selection": "final only; no checkpoint search"
+  },
+  "validation": {
+    "base_seed": 4001,
+    "scenarios": "all canonical 11",
+    "envs_per_policy": 64,
+    "steps": 1000,
+    "terrain": "generator",
+    "gates": "unchanged stage-5 gates",
+    "comparison": [
+      "old775",
+      "existing_recovery924",
+      "pilot1150",
+      "new_final"
+    ]
+  },
+  "test": {
+    "base_seed": 5001,
+    "scenarios": "all canonical 11",
+    "envs_per_policy": 64,
+    "steps": 1000,
+    "terrain": "generator",
+    "condition": "same corrected sensor contract",
+    "selection": "No reselection or gate relaxation if final fails"
+  },
+  "hardware_validation": false,
+  "status": "preflight_passed",
+  "source_sha256": {
+    "source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env.py": "269e4e32bf9649505187e547c7ccbfd70e13ba73cc833430db437e67fc05ef1f",
+    "source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env_cfg.py": "5800943cc46317b1f64aa1958a05d691937cb0a1a4c6998f759310ea1275fce6",
+    "scripts/tools/verify_retrain_changes.py": "f6f535d5a5c3d6a4316881df4c572c0803da5785e1db832098f71cf45dda8acf",
+    "scripts/rsl_rl/train.py": "23d19b641b95bd84160f92aedf8dd7f812eeadb0eb630aab8215394c9293dac4"
+  }
+}

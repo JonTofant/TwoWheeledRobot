@@ -159,6 +159,46 @@ env.reset()
 frac = proc.action_delay_samples.float().mean().item()
 check("delays: (0,1) gives a mix", 0.2 < frac < 0.8, f"action-delay fraction {frac:.2f}")
 
+# Sensor latency must not add a tick to locally known previous actions/commands.
+u._obs_delay_samples[:] = 1
+u._drive_sensor_valid[:] = False
+u.cfg.obs_delay_mode = "sensors"
+first = u._get_observations()["policy"].clone()
+saved_pitch = u._drive_sensor_delay[:, 2].clone()
+saved_heading = u._drive_sensor_delay[:, 4].clone()
+u._pitch_bias += 0.25
+proc.net_current[:] = torch.tensor([0.8, -0.6], device=u.device)
+u._commands.v_cmd[:] = 0.2
+u._commands.w_cmd[:] = -0.4
+u._commands.yaw_ref += 0.3
+second = u._get_observations()["policy"]
+scale = u._drive_obs_builder.scale
+check("sensor delay: pitch retains preceding measurement",
+      torch.allclose(second[:, 2] * scale[0, 2], saved_pitch))
+check("sensor delay: previous command remains one tick old",
+      torch.allclose(second[:, 9:11] * scale[:, 9:11], proc.net_current))
+check("sensor delay: command references remain current",
+      torch.allclose(second[:, 7] * scale[0, 7], u._commands.v_cmd)
+      and torch.allclose(second[:, 8] * scale[0, 8], u._commands.w_cmd))
+check("sensor delay: delayed heading uses current yaw reference",
+      torch.allclose(second[:, 4] * scale[0, 4], torch.sin(saved_heading - u._commands.yaw_ref)))
+check("sensor delay: first observation has valid heading pair",
+      torch.allclose(first[:, 4].square() + first[:, 5].square(), torch.ones(u.num_envs, device=u.device)))
+u._reset_idx(torch.tensor([0], device=u.device))
+check("sensor delay: partial reset clears only that sensor history",
+      not bool(u._drive_sensor_valid[0]) and bool(u._drive_sensor_valid[1:].all()))
+
+# Explicit legacy mode preserves the full-vector history for historical replay.
+u.cfg.obs_delay_mode = "legacy_full"
+u._obs_delay_samples[:] = 1
+legacy_previous = u._obs_now.clone()
+proc.net_current[:] = 1.1
+legacy = u._get_observations()["policy"]
+check("legacy full delay: reproduces preceding complete observation",
+      torch.equal(legacy[1:], legacy_previous[1:]))
+u.cfg.obs_delay_mode = "sensors"
+env.reset()
+
 # 6. Actor parameter counts for all three runner cfgs.
 wrapped = RslRlVecEnvWrapper(env, clip_actions=None)
 actor_counts = {}

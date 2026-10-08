@@ -1,0 +1,64 @@
+{
+  "telemetry_commit": "5b4b481",
+  "firmware_commit": "44eb23a28f71bf93b3f37f040d4d07454c91495a",
+  "csv_sha256": "17cda4a3524966af924802f54c91b3cc2a35839471d060b7bfd479a8fb18f453",
+  "rows": 1678,
+  "recording_duration_s": 25.156000000000002,
+  "active_rows": 356,
+  "rearm_time_s": 14.39,
+  "fall_time_s": 19.726,
+  "rearm_to_fall_s": 5.3359999999999985,
+  "upright_threshold_rearm_pitch_deg": 4.819160777873439,
+  "fall_pitch_deg": 35.244076645589274,
+  "command_velocity_max_abs_mps": 0.0,
+  "command_yaw_max_abs_radps": 0.0,
+  "testbench_running_frames": 0,
+  "physical_fall_transitions": 1,
+  "testbench_reported_falls": 0,
+  "max_abs_velocity_mps": 1.1713690757751465,
+  "velocity_rms_zero_command_mps": 0.4159033238175643,
+  "pitch_rms_deg": 8.668881603737727,
+  "pre_fall_odometry_change_m": 1.1039006747305393,
+  "pre_fall_unwrapped_yaw_change_deg": -33.19256466894991,
+  "max_abs_command_current_A": 1.3854693174362185,
+  "last_current_commands_logical_A": [
+    1.3854693174362185,
+    1.127961277961731
+  ],
+  "last_current_feedback_logical_A": [
+    0.4791170060634613,
+    0.4906708598136902
+  ],
+  "inference_mean_us": 2924.7524756956636,
+  "inference_max_us": 2955.071533203125,
+  "control_body_max_us": 3307.666748046875,
+  "control_period_min_us": 14999.1904296875,
+  "control_period_max_us": 15000.8330078125,
+  "wheel_age_median_us": 9299.29736328125,
+  "finite_numeric_values": true,
+  "sequence_complete": true,
+  "telemetry_dropped_frames_max": 0,
+  "replay_C_max_abs_current_difference_A": 7.152557373046875e-07,
+  "replay_C_rms_difference_A": 1.8564562838123962e-07,
+  "observations_verified": {
+    "pitch_max_abs_error": 6.148776199310646e-08,
+    "pitch_rate_max_abs_error": 0.0,
+    "velocity_max_abs_error": 0.0,
+    "roll_max_abs_error": 4.7442979267398044e-09,
+    "yaw_rate_max_abs_error": 8.326672684688674e-17,
+    "previous_left_max_abs_error": 1.1102230246251565e-16,
+    "previous_right_max_abs_error": 1.1102230246251565e-16
+  },
+  "references": {
+    "gru_testbench.csv": {
+      "fall_frames": 0,
+      "testbench_running_sample_s": 70.095,
+      "exact_model_build_identity": "not supplied; contextual historical recording, not matched replicate"
+    },
+    "range_gru_segmented.csv": {
+      "fall_frames": 0,
+      "testbench_running_sample_s": 103.89,
+      "exact_model_build_identity": "not supplied; contextual historical recording, not matched replicate"
+    }
+  }
+}

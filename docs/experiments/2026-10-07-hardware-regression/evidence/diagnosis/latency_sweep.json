@@ -1,0 +1,587 @@
+{
+  "meta": {
+    "source_commit": "98658ede576b64a9d19ad7715622e45a3748e59a",
+    "seed": 3001,
+    "cohort": 32,
+    "steps": 1000,
+    "dt": 0.015,
+    "paired_initial_states": false,
+    "note": "Independent randomized cohorts; frozen sensitivity, not proof of physical latency. Sensor delay also changes state-derived odometry but references/current remain current.",
+    "models": {
+      "old": {
+        "path": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-08-10_23-51-29_range_gru_stage5/model_775.pt",
+        "sha256": "7245dd0070822998c82555474b27701718008c7ca4f5d6441fafb5c8cd41c273"
+      },
+      "recovery": {
+        "path": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_07-07-54_gru_recovery_floor015_s43_2026-10-06_retry1_stage5/model_924.pt",
+        "sha256": "014f3ea211d1b8d30ec979cffe6c622333e1294231fe061cd26c06990e51e1ab"
+      },
+      "pilot": {
+        "path": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-06_12-07-53_r3_cd_pilot_20261006T101555Z_range_gru_s43_stage5/model_1150.pt",
+        "sha256": "4eec9bfce0ecd2e567a984f3e89baac0e1ed331fae75f31be8b066b256201540"
+      }
+    },
+    "cases": [
+      [
+        "as_trained",
+        -1,
+        -1,
+        false,
+        0.0007
+      ],
+      [
+        "a0_sensor0_fresh",
+        0,
+        0,
+        true,
+        0.0007
+      ],
+      [
+        "a1_sensor0_fresh",
+        1,
+        0,
+        true,
+        0.0007
+      ],
+      [
+        "a2_sensor0_fresh",
+        2,
+        0,
+        true,
+        0.0007
+      ],
+      [
+        "a3_sensor0_fresh",
+        3,
+        0,
+        true,
+        0.0007
+      ],
+      [
+        "a1_sensor1_fresh",
+        1,
+        1,
+        true,
+        0.0007
+      ],
+      [
+        "a2_sensor1_fresh",
+        2,
+        1,
+        true,
+        0.0007
+      ],
+      [
+        "a3_sensor1_fresh",
+        3,
+        1,
+        true,
+        0.0007
+      ],
+      [
+        "a2_sensor2_fresh",
+        2,
+        2,
+        true,
+        0.0007
+      ],
+      [
+        "a1_o1_whole",
+        1,
+        1,
+        false,
+        0.0007
+      ],
+      [
+        "a2_o1_whole",
+        2,
+        1,
+        false,
+        0.0007
+      ],
+      [
+        "a2_sensor1_old_damping",
+        2,
+        1,
+        true,
+        0.01
+      ]
+    ]
+  },
+  "results": {
+    "old": {
+      "as_trained": {
+        "fall_rate": 0.0625,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 14.616561889648438,
+        "sample_coverage": 0.9743750095367432,
+        "rms_velocity_mps": 0.08266431093215942,
+        "rms_pitch_deg": 1.4057031971120473,
+        "rms_command_a": 0.15992075204849243,
+        "mean_abs_command_delta_a": 0.1416814923286438,
+        "mean_peak_speed_mps": 0.5582231283187866,
+        "final_drift_m": 0.1701594591140747
+      },
+      "a0_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.0478195920586586,
+        "rms_pitch_deg": 0.8046209369415376,
+        "rms_command_a": 0.07761949300765991,
+        "mean_abs_command_delta_a": 0.06087683141231537,
+        "mean_peak_speed_mps": 0.6763643026351929,
+        "final_drift_m": 0.05118005722761154
+      },
+      "a1_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.06397475302219391,
+        "rms_pitch_deg": 0.8511681425266455,
+        "rms_command_a": 0.13266298174858093,
+        "mean_abs_command_delta_a": 0.08521784842014313,
+        "mean_peak_speed_mps": 0.6349978446960449,
+        "final_drift_m": 0.1176435649394989
+      },
+      "a2_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.2332782745361328,
+        "rms_pitch_deg": 3.0701529564478065,
+        "rms_command_a": 0.3197079300880432,
+        "mean_abs_command_delta_a": 0.1919843852519989,
+        "mean_peak_speed_mps": 0.5953653454780579,
+        "final_drift_m": 1.5981254577636719
+      },
+      "a3_sensor0_fresh": {
+        "fall_rate": 0.09375,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 13.842656135559082,
+        "sample_coverage": 0.9227499961853027,
+        "rms_velocity_mps": 0.35543978214263916,
+        "rms_pitch_deg": 5.099171639974107,
+        "rms_command_a": 0.37984055280685425,
+        "mean_abs_command_delta_a": 0.21791021525859833,
+        "mean_peak_speed_mps": 0.8375258445739746,
+        "final_drift_m": 2.3167545795440674
+      },
+      "a1_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.21308386325836182,
+        "rms_pitch_deg": 2.4962437501165464,
+        "rms_command_a": 0.30888649821281433,
+        "mean_abs_command_delta_a": 0.17712044715881348,
+        "mean_peak_speed_mps": 0.5147551894187927,
+        "final_drift_m": 1.72959303855896
+      },
+      "a2_sensor1_fresh": {
+        "fall_rate": 0.09375,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 14.010937690734863,
+        "sample_coverage": 0.9339687824249268,
+        "rms_velocity_mps": 0.33474740386009216,
+        "rms_pitch_deg": 4.530951981221468,
+        "rms_command_a": 0.37081021070480347,
+        "mean_abs_command_delta_a": 0.2078978717327118,
+        "mean_peak_speed_mps": 0.7919392585754395,
+        "final_drift_m": 2.287942886352539
+      },
+      "a3_sensor1_fresh": {
+        "fall_rate": 0.1875,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 12.644062042236328,
+        "sample_coverage": 0.8427499532699585,
+        "rms_velocity_mps": 0.4176533818244934,
+        "rms_pitch_deg": 6.102207971478928,
+        "rms_command_a": 0.46555212140083313,
+        "mean_abs_command_delta_a": 0.3209383487701416,
+        "mean_peak_speed_mps": 0.9279695749282837,
+        "final_drift_m": 2.7771737575531006
+      },
+      "a2_sensor2_fresh": {
+        "fall_rate": 0.09375,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 13.950937271118164,
+        "sample_coverage": 0.9299687743186951,
+        "rms_velocity_mps": 0.3717898726463318,
+        "rms_pitch_deg": 4.7708999418586,
+        "rms_command_a": 0.41579508781433105,
+        "mean_abs_command_delta_a": 0.2403573840856552,
+        "mean_peak_speed_mps": 0.8673948049545288,
+        "final_drift_m": 3.0705795288085938
+      },
+      "a1_o1_whole": {
+        "fall_rate": 0.34375,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 13.019062042236328,
+        "sample_coverage": 0.8675937652587891,
+        "rms_velocity_mps": 0.19868656992912292,
+        "rms_pitch_deg": 3.829207246836956,
+        "rms_command_a": 0.3439653515815735,
+        "mean_abs_command_delta_a": 0.34917300939559937,
+        "mean_peak_speed_mps": 0.6559615731239319,
+        "final_drift_m": 0.6203930377960205
+      },
+      "a2_o1_whole": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.20575162768363953,
+        "rms_pitch_deg": 3.4201672811255794,
+        "rms_command_a": 0.27771443128585815,
+        "mean_abs_command_delta_a": 0.14626260101795197,
+        "mean_peak_speed_mps": 0.518138587474823,
+        "final_drift_m": 0.4852561950683594
+      },
+      "a2_sensor1_old_damping": {
+        "fall_rate": 0.34375,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 10.701093673706055,
+        "sample_coverage": 0.7130625247955322,
+        "rms_velocity_mps": 0.3593991994857788,
+        "rms_pitch_deg": 7.3796334925106715,
+        "rms_command_a": 0.4062903821468353,
+        "mean_abs_command_delta_a": 0.22965064644813538,
+        "mean_peak_speed_mps": 0.8027774691581726,
+        "final_drift_m": 1.2144594192504883
+      }
+    },
+    "recovery": {
+      "as_trained": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.05733627825975418,
+        "rms_pitch_deg": 0.9455084228901542,
+        "rms_command_a": 0.09862130880355835,
+        "mean_abs_command_delta_a": 0.045412104576826096,
+        "mean_peak_speed_mps": 0.4748942255973816,
+        "final_drift_m": 0.06893819570541382
+      },
+      "a0_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.051859430968761444,
+        "rms_pitch_deg": 0.8506365083492953,
+        "rms_command_a": 0.08647049963474274,
+        "mean_abs_command_delta_a": 0.06275493651628494,
+        "mean_peak_speed_mps": 0.6465824842453003,
+        "final_drift_m": 0.06406012922525406
+      },
+      "a1_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.051132507622241974,
+        "rms_pitch_deg": 0.8553704164134959,
+        "rms_command_a": 0.0874396413564682,
+        "mean_abs_command_delta_a": 0.03658153489232063,
+        "mean_peak_speed_mps": 0.5381720066070557,
+        "final_drift_m": 0.059479016810655594
+      },
+      "a2_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.1185278370976448,
+        "rms_pitch_deg": 1.5486230912255659,
+        "rms_command_a": 0.2031402438879013,
+        "mean_abs_command_delta_a": 0.08988732099533081,
+        "mean_peak_speed_mps": 0.31705930829048157,
+        "final_drift_m": 0.11323767900466919
+      },
+      "a3_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.1761864423751831,
+        "rms_pitch_deg": 2.6204136010196164,
+        "rms_command_a": 0.24830707907676697,
+        "mean_abs_command_delta_a": 0.09517192840576172,
+        "mean_peak_speed_mps": 0.490462064743042,
+        "final_drift_m": 0.2785804569721222
+      },
+      "a1_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.1208021268248558,
+        "rms_pitch_deg": 1.610375258398474,
+        "rms_command_a": 0.20349326729774475,
+        "mean_abs_command_delta_a": 0.08905994892120361,
+        "mean_peak_speed_mps": 0.3176940083503723,
+        "final_drift_m": 0.11402401328086853
+      },
+      "a2_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.16658805310726166,
+        "rms_pitch_deg": 2.479462829099471,
+        "rms_command_a": 0.2417486310005188,
+        "mean_abs_command_delta_a": 0.08789046108722687,
+        "mean_peak_speed_mps": 0.44014406204223633,
+        "final_drift_m": 0.15239953994750977
+      },
+      "a3_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.2043975591659546,
+        "rms_pitch_deg": 3.3045010157391754,
+        "rms_command_a": 0.290469229221344,
+        "mean_abs_command_delta_a": 0.08989927917718887,
+        "mean_peak_speed_mps": 0.5456459522247314,
+        "final_drift_m": 0.25512227416038513
+      },
+      "a2_sensor2_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.20481252670288086,
+        "rms_pitch_deg": 3.3439154761183802,
+        "rms_command_a": 0.29012730717658997,
+        "mean_abs_command_delta_a": 0.09284356981515884,
+        "mean_peak_speed_mps": 0.5752220153808594,
+        "final_drift_m": 0.2543933391571045
+      },
+      "a1_o1_whole": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.08153247833251953,
+        "rms_pitch_deg": 1.2324876787698198,
+        "rms_command_a": 0.13681522011756897,
+        "mean_abs_command_delta_a": 0.054499901831150055,
+        "mean_peak_speed_mps": 0.30277884006500244,
+        "final_drift_m": 0.08579695969820023
+      },
+      "a2_o1_whole": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.15249279141426086,
+        "rms_pitch_deg": 2.4629854246136387,
+        "rms_command_a": 0.2142397165298462,
+        "mean_abs_command_delta_a": 0.07505051046609879,
+        "mean_peak_speed_mps": 0.3901553153991699,
+        "final_drift_m": 0.1609957367181778
+      },
+      "a2_sensor1_old_damping": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.15360580384731293,
+        "rms_pitch_deg": 2.693973030833361,
+        "rms_command_a": 0.22004210948944092,
+        "mean_abs_command_delta_a": 0.08345120400190353,
+        "mean_peak_speed_mps": 0.3838946223258972,
+        "final_drift_m": 0.11653120070695877
+      }
+    },
+    "pilot": {
+      "as_trained": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.04631461203098297,
+        "rms_pitch_deg": 0.8389374081572684,
+        "rms_command_a": 0.1494113802909851,
+        "mean_abs_command_delta_a": 0.15750759840011597,
+        "mean_peak_speed_mps": 0.34297099709510803,
+        "final_drift_m": 0.05529541149735451
+      },
+      "a0_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.053018562495708466,
+        "rms_pitch_deg": 0.9077259508357592,
+        "rms_command_a": 0.20503142476081848,
+        "mean_abs_command_delta_a": 0.2656038701534271,
+        "mean_peak_speed_mps": 0.5447094440460205,
+        "final_drift_m": 0.04772111400961876
+      },
+      "a1_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.04445758834481239,
+        "rms_pitch_deg": 1.056095375411596,
+        "rms_command_a": 0.08087195456027985,
+        "mean_abs_command_delta_a": 0.0826762318611145,
+        "mean_peak_speed_mps": 0.4160572588443756,
+        "final_drift_m": 0.06119643896818161
+      },
+      "a2_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.12015443295240402,
+        "rms_pitch_deg": 1.8454471042984526,
+        "rms_command_a": 0.32980120182037354,
+        "mean_abs_command_delta_a": 0.4918094873428345,
+        "mean_peak_speed_mps": 0.2883152663707733,
+        "final_drift_m": 0.05899620056152344
+      },
+      "a3_sensor0_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.16036513447761536,
+        "rms_pitch_deg": 3.0506267262712097,
+        "rms_command_a": 0.32896947860717773,
+        "mean_abs_command_delta_a": 0.4036712050437927,
+        "mean_peak_speed_mps": 0.3755056858062744,
+        "final_drift_m": 0.10192102193832397
+      },
+      "a1_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.12326722592115402,
+        "rms_pitch_deg": 1.89590213858416,
+        "rms_command_a": 0.3290322721004486,
+        "mean_abs_command_delta_a": 0.48966652154922485,
+        "mean_peak_speed_mps": 0.292777955532074,
+        "final_drift_m": 0.08436600118875504
+      },
+      "a2_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.1561352014541626,
+        "rms_pitch_deg": 2.9417949189230495,
+        "rms_command_a": 0.32214850187301636,
+        "mean_abs_command_delta_a": 0.3917252719402313,
+        "mean_peak_speed_mps": 0.36354774236679077,
+        "final_drift_m": 0.08398617058992386
+      },
+      "a3_sensor1_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.20469504594802856,
+        "rms_pitch_deg": 3.9201981731862197,
+        "rms_command_a": 0.38028258085250854,
+        "mean_abs_command_delta_a": 0.4672396779060364,
+        "mean_peak_speed_mps": 0.48297029733657837,
+        "final_drift_m": 0.2005476951599121
+      },
+      "a2_sensor2_fresh": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.20502318441867828,
+        "rms_pitch_deg": 3.962420695087946,
+        "rms_command_a": 0.3847472071647644,
+        "mean_abs_command_delta_a": 0.47614842653274536,
+        "mean_peak_speed_mps": 0.468952476978302,
+        "final_drift_m": 0.1802644580602646
+      },
+      "a1_o1_whole": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.05339086800813675,
+        "rms_pitch_deg": 0.9132046163237557,
+        "rms_command_a": 0.16407565772533417,
+        "mean_abs_command_delta_a": 0.15217339992523193,
+        "mean_peak_speed_mps": 0.278109610080719,
+        "final_drift_m": 0.051515817642211914
+      },
+      "a2_o1_whole": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.12499856948852539,
+        "rms_pitch_deg": 1.7844172296302732,
+        "rms_command_a": 0.267922043800354,
+        "mean_abs_command_delta_a": 0.3111191391944885,
+        "mean_peak_speed_mps": 0.34463798999786377,
+        "final_drift_m": 0.0756552666425705
+      },
+      "a2_sensor1_old_damping": {
+        "fall_rate": 0.0,
+        "invalid_rate": 0.0,
+        "physics_broken_rate": 0.0,
+        "survival_s": 15.0,
+        "sample_coverage": 1.0,
+        "rms_velocity_mps": 0.13618816435337067,
+        "rms_pitch_deg": 2.60024149107963,
+        "rms_command_a": 0.3016378879547119,
+        "mean_abs_command_delta_a": 0.3771117329597473,
+        "mean_peak_speed_mps": 0.3455476462841034,
+        "final_drift_m": 0.04269484058022499
+      }
+    }
+  }
+}

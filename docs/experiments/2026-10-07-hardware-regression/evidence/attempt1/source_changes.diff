@@ -1,0 +1,158 @@
+diff --git a/scripts/tools/verify_retrain_changes.py b/scripts/tools/verify_retrain_changes.py
+index 5a9d1f2..07ba8d7 100644
+--- a/scripts/tools/verify_retrain_changes.py
++++ b/scripts/tools/verify_retrain_changes.py
+@@ -159,6 +159,46 @@ env.reset()
+ frac = proc.action_delay_samples.float().mean().item()
+ check("delays: (0,1) gives a mix", 0.2 < frac < 0.8, f"action-delay fraction {frac:.2f}")
+ 
++# Sensor latency must not add a tick to locally known previous actions/commands.
++u._obs_delay_samples[:] = 1
++u._drive_sensor_valid[:] = False
++u.cfg.obs_delay_mode = "sensors"
++first = u._get_observations()["policy"].clone()
++saved_pitch = u._drive_sensor_delay[:, 2].clone()
++saved_heading = u._drive_sensor_delay[:, 4].clone()
++u._pitch_bias += 0.25
++proc.net_current[:] = torch.tensor([0.8, -0.6], device=u.device)
++u._commands.v_cmd[:] = 0.2
++u._commands.w_cmd[:] = -0.4
++u._commands.yaw_ref += 0.3
++second = u._get_observations()["policy"]
++scale = u._drive_obs_builder.scale
++check("sensor delay: pitch retains preceding measurement",
++      torch.allclose(second[:, 2] * scale[0, 2], saved_pitch))
++check("sensor delay: previous command remains one tick old",
++      torch.allclose(second[:, 9:11] * scale[:, 9:11], proc.net_current))
++check("sensor delay: command references remain current",
++      torch.allclose(second[:, 7] * scale[0, 7], u._commands.v_cmd)
++      and torch.allclose(second[:, 8] * scale[0, 8], u._commands.w_cmd))
++check("sensor delay: delayed heading uses current yaw reference",
++      torch.allclose(second[:, 4] * scale[0, 4], torch.sin(saved_heading - u._commands.yaw_ref)))
++check("sensor delay: first observation has valid heading pair",
++      torch.allclose(first[:, 4].square() + first[:, 5].square(), torch.ones(u.num_envs, device=u.device)))
++u._reset_idx(torch.tensor([0], device=u.device))
++check("sensor delay: partial reset clears only that sensor history",
++      not bool(u._drive_sensor_valid[0]) and bool(u._drive_sensor_valid[1:].all()))
++
++# Explicit legacy mode preserves the full-vector history for historical replay.
++u.cfg.obs_delay_mode = "legacy_full"
++u._obs_delay_samples[:] = 1
++legacy_previous = u._obs_now.clone()
++proc.net_current[:] = 1.1
++legacy = u._get_observations()["policy"]
++check("legacy full delay: reproduces preceding complete observation",
++      torch.equal(legacy[1:], legacy_previous[1:]))
++u.cfg.obs_delay_mode = "sensors"
++env.reset()
++
+ # 6. Actor parameter counts for all three runner cfgs.
+ wrapped = RslRlVecEnvWrapper(env, clip_actions=None)
+ actor_counts = {}
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env.py
+index 9693f61..1ea4648 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env.py
+@@ -68,6 +68,8 @@ class NNDriveEnv(PureNNBalanceEnv):
+             )
+         if len(cfg.fixed_leg_stance_rad) != 4:
+             raise ValueError("fixed_leg_stance_rad must contain fl, fr, bl, br targets")
++        if cfg.obs_delay_mode not in ("sensors", "legacy_full"):
++            raise ValueError(f"Unsupported obs_delay_mode: {cfg.obs_delay_mode!r}")
+         # The inherited NormalizedObservationBuilder validates observation_scale
+         # against observation_space; alias it to the drive scale (it is unused
+         # by this env — DriveObservationBuilder replaces it).
+@@ -78,6 +80,11 @@ class NNDriveEnv(PureNNBalanceEnv):
+         self._cg_processor = CyberGearStanceProcessor(cfg, self.num_envs, self.device)
+         self._drive_obs_builder = DriveObservationBuilder(cfg, self.device)
+         self._drive_reward = DriveReward(cfg)
++        # Raw noisy sensor channels: odometry, velocity, pitch/rate, heading,
++        # yaw rate, roll/rate and four leg positions. Never buffer references,
++        # commands or previous policy outputs as if they were sensor readings.
++        self._drive_sensor_delay = torch.zeros(self.num_envs, 12, device=self.device)
++        self._drive_sensor_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+ 
+         # Per-episode sensor-model randomization state.
+         self._odometry_scale = torch.ones(self.num_envs, device=self.device)
+@@ -244,6 +251,7 @@ class NNDriveEnv(PureNNBalanceEnv):
+                 f"(dynamic <= static), pool of {self.cfg.contact_friction_pool_size}"
+             )
+         print(f"prev-current observation source: {self.cfg.prev_current_obs_source}")
++        print(f"observation delay mode: {self.cfg.obs_delay_mode}")
+         print(
+             f"obs delay steps: {self.cfg.obs_delay_steps_range}, "
+             f"action delay steps: {self.cfg.action_delay_steps_range}"
+@@ -364,17 +372,33 @@ class NNDriveEnv(PureNNBalanceEnv):
+         roll_rate_m = roll_rate + self._roll_rate_bias + torch.randn_like(roll_rate) * self.cfg.pitch_rate_noise_std
+         yaw_rate_m = yaw_rate + self._yaw_rate_bias + torch.randn_like(yaw_rate) * self.cfg.yaw_rate_noise_std
+         velocity_m = velocity * self._odometry_scale + torch.randn_like(velocity) * self.cfg.velocity_noise_std
+-        pos_err_m = self._commands.position_error(x_rel * self._odometry_scale)
++        x_m = x_rel * self._odometry_scale
+ 
+         cg_pos = self.robot.data.joint_pos[:, self._cg_ids]
+         cg_pos = cg_pos + torch.randn_like(cg_pos) * self.cfg.noise_cg_pos_std
+         cg_pos_norm = cg_pos / self.cfg.cg_position_scale_rad
+ 
++        heading_m = yaw_from_quat_wxyz(self.robot.data.root_quat_w)
++        if self.cfg.obs_delay_mode == "sensors":
++            sensors = torch.cat([
++                torch.stack([x_m, velocity_m, pitch_m, pitch_rate_m, heading_m,
++                             yaw_rate_m, roll_m, roll_rate_m], dim=1), cg_pos_norm,
++            ], dim=1)
++            use_history = (self._obs_delay_samples > 0) & self._drive_sensor_valid
++            delayed = torch.where(use_history[:, None], self._drive_sensor_delay, sensors)
++            self._drive_sensor_delay = sensors.clone()
++            self._drive_sensor_valid[:] = True
++            x_m, velocity_m, pitch_m, pitch_rate_m, heading_m, yaw_rate_m, roll_m, roll_rate_m = (
++                delayed[:, :8].unbind(dim=1)
++            )
++            cg_pos_norm = delayed[:, 8:12]
++        pos_err_m = self._commands.position_error(x_m)
++
+         # No simulated noise/bias on the underlying yaw (matching a fused-IMU
+         # heading, not raw gyro integration — see DriveObservationBuilder's
+         # docstring). Sin/cos of the raw, unwrapped difference: bounded and
+         # smooth for any error magnitude, no anti-windup needed on yaw_ref.
+-        yaw_err_sin, yaw_err_cos = self._commands.yaw_error_sin_cos(yaw_from_quat_wxyz(self.robot.data.root_quat_w))
++        yaw_err_sin, yaw_err_cos = self._commands.yaw_error_sin_cos(heading_m)
+ 
+         self._obs_now = self._drive_obs_builder.build(
+             pos_err_m,
+@@ -392,7 +416,9 @@ class NNDriveEnv(PureNNBalanceEnv):
+             roll_m,
+             roll_rate_m,
+         )
+-        obs = torch.where(self._obs_delay_samples.view(-1, 1) > 0, self._obs_delay, self._obs_now)
++        obs = self._obs_now
++        if self.cfg.obs_delay_mode == "legacy_full":
++            obs = torch.where(self._obs_delay_samples.view(-1, 1) > 0, self._obs_delay, self._obs_now)
+         self._obs_delay = self._obs_now.clone()
+         return {"policy": obs}
+ 
+@@ -514,6 +540,9 @@ class NNDriveEnv(PureNNBalanceEnv):
+         )
+         n = len(env_ids_t)
+ 
++        self._drive_sensor_delay[env_ids_t] = 0.0
++        self._drive_sensor_valid[env_ids_t] = False
++
+         # Re-place the robot on its terrain origin with a random heading. The
+         # parent reset already placed it on the (flat) scene grid; terrain
+         # origins differ, so this write wins.
+diff --git a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env_cfg.py b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env_cfg.py
+index 057cb78..47b2da2 100644
+--- a/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env_cfg.py
++++ b/source/TwoWheeledRobot/TwoWheeledRobot/tasks/direct/twowheeledrobot/nn_drive_env_cfg.py
+@@ -90,6 +90,12 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
+     # train/deploy mismatch on hardware.
+     prev_current_obs_source: str = "command"
+ 
++    # Delay sensor measurements before constructing errors against the current
++    # references. Commands and the policy's own previous output are locally
++    # known and must not acquire an extra sensor-delay tick. Use "legacy_full"
++    # explicitly when reproducing the August/r2/2026-10-06 pilot observations.
++    obs_delay_mode: str = "sensors"
++
+     # ── Terrain ───────────────────────────────────────────────────────────────
+     # "flat"  → plane importer (fast, early curriculum stages)
+     # "generator" → DRIVE_TERRAINS_CFG mix (bumps + inclines)

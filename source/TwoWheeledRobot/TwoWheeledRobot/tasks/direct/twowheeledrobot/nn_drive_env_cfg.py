@@ -90,6 +90,12 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     # train/deploy mismatch on hardware.
     prev_current_obs_source: str = "command"
 
+    # Delay sensor measurements before constructing errors against the current
+    # references. Commands and the policy's own previous output are locally
+    # known and must not acquire an extra sensor-delay tick. Use "legacy_full"
+    # explicitly when reproducing the August/r2/2026-10-06 pilot observations.
+    obs_delay_mode: str = "sensors"
+
     # ── Terrain ───────────────────────────────────────────────────────────────
     # "flat"  → plane importer (fast, early curriculum stages)
     # "generator" → DRIVE_TERRAINS_CFG mix (bumps + inclines)

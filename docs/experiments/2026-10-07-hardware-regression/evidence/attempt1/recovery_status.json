@@ -1,0 +1,92 @@
+{
+  "status": "completed_not_qualified",
+  "checkpoint": "/workspace/TwoWheeledRobot/logs/rsl_rl/nn_drive_fixed_stance/2026-10-07_13-38-09_gru_sensor_timing_recovery_s43_2026-10-07_stage5/model_874.pt",
+  "checkpoint_sha256": "c5c0ac0c3c7d76f07016f1718cf93a76f7f60733e75ba51bb6cb6e55890ea8d8",
+  "source_parent": "98658ede576b64a9d19ad7715622e45a3748e59a",
+  "source_changes_sha256": "5277f3103e4a5a9f567c4dc42600d3d942b2bde111cfe5b4a4f826cc10001217",
+  "commands": [
+    [
+      "/isaac-sim/kit/python/bin/python3",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/benchmark_cohorts.py",
+      "--headless",
+      "--models",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/comparison_models.json",
+      "--out",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/validation.json",
+      "--seed",
+      "4001"
+    ],
+    [
+      "/isaac-sim/kit/python/bin/python3",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/benchmark_cohorts.py",
+      "--headless",
+      "--models",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/comparison_models.json",
+      "--out",
+      "/workspace/TwoWheeledRobot/logs/regression_diagnosis_2026-10-07/test.json",
+      "--seed",
+      "5001"
+    ]
+  ],
+  "hardware_validated": false,
+  "phase": "test",
+  "validation_gates": {
+    "old": {
+      "failures": [
+        "drive_forward_slow: rms_vel_err_mps 0.207 > 0.120",
+        "drive_backward_slow: rms_vel_err_mps 0.167 > 0.120",
+        "payload_while_still: world_drift_m 0.680 > 0.500"
+      ],
+      "score": 1.3585106972407404
+    },
+    "recovery": {
+      "failures": [
+        "drive_forward_slow: rms_vel_err_mps 0.151 > 0.120",
+        "drive_backward_slow: rms_vel_err_mps 0.162 > 0.120",
+        "payload_while_still: world_drift_m 0.508 > 0.500"
+      ],
+      "score": 1.064615859722076
+    },
+    "pilot": {
+      "failures": [],
+      "score": 0.8401841085486846
+    },
+    "timing_recovery": {
+      "failures": [
+        "drive_forward_slow: rms_vel_err_mps 0.136 > 0.120",
+        "drive_backward_slow: rms_vel_err_mps 0.184 > 0.120",
+        "drive_backward: rms_vel_err_mps 0.205 > 0.195"
+      ],
+      "score": 1.0610421810905672
+    }
+  },
+  "test_gates": {
+    "old": {
+      "failures": [
+        "drive_forward_slow: rms_vel_err_mps 0.171 > 0.120",
+        "drive_backward_slow: rms_vel_err_mps 0.154 > 0.120",
+        "push_while_still: world_drift_m 0.675 > 0.500",
+        "payload_while_still: world_drift_m 1.099 > 0.500"
+      ],
+      "score": 1.4583640601645376
+    },
+    "recovery": {
+      "failures": [
+        "drive_forward_slow: rms_vel_err_mps 0.123 > 0.120",
+        "drive_backward_slow: rms_vel_err_mps 0.136 > 0.120"
+      ],
+      "score": 0.9219968998113743
+    },
+    "pilot": {
+      "failures": [],
+      "score": 0.7963406006081306
+    },
+    "timing_recovery": {
+      "failures": [
+        "drive_backward_slow: rms_vel_err_mps 0.160 > 0.120"
+      ],
+      "score": 0.9500055933355666
+    }
+  },
+  "passes_both_gates": false
+}

@@ -1,0 +1,210 @@
+[WARN][AppLauncher]: There are no arguments attached to the ArgumentParser object. If you have your own arguments, please load your own arguments before calling the `AppLauncher.add_app_launcher_args` method. This allows the method to check the validity of the arguments and perform checks for argument names.
+[INFO][AppLauncher]: Using device: cuda:0
+[INFO][AppLauncher]: Loading experience file: /workspace/isaaclab/apps/isaaclab.python.headless.kit
+[INFO]: Parsing configuration from: TwoWheeledRobot.tasks.direct.twowheeledrobot.nn_drive_env_cfg:NNDriveFixedStanceEnvCfg
+
+[36m======================================================================================[0m
+[36m[1m[INFO][IsaacLab]: Logging to file: /tmp/isaaclab/logs/isaaclab_2026-10-07_13-36-28.log[0m
+[36m======================================================================================[0m
+
+[33m13:36:28 [simulation_context.py] WARNING: The `enable_external_forces_every_iteration` parameter in the PhysxCfg is set to False. If you are experiencing noisy velocities, consider enabling this flag. You may need to slightly increase the number of velocity iterations (setting it to 1 or 2 rather than 0), together with this flag, to improve the accuracy of velocity updates.[0m
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : 7
+	Physics step-size     : 0.001
+	Rendering step-size   : 0.02
+	Environment step-size : 0.015
+[NNDriveEnv] terrain_mode=flat, ground friction static/dynamic=1.000/1.000 (per_episode)
+[INFO]: Time taken for scene creation : 1.040679 seconds
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 64
+	Environment spacing   : 2.5
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : ['/World/ground']
+	Replicate physics     : True
+[INFO]: Starting the simulation. This may take a few seconds. Please wait...
+[33m13:36:29 [actuator_pd.py] WARNING: The <ImplicitActuatorCfg> object has a value for 'velocity_limit'. Previously, although this value was specified, it was not getting used by implicit actuators. Since this parameter affects the simulation behavior, we continue to not use it. This parameter will be removed in the future. To set the velocity limit, please use 'velocity_limit_sim' instead.[0m
+[INFO]: Time taken for simulation start : 0.415846 seconds
+[INFO]: Completed setting up the environment...
+[StandupEnv] CyberGear PhysX limit readback verified [fl, fr, bl, br]: lower=[-10.0, -90.0, -90.0, -10.0]°, upper=[90.0, 10.0, 10.0, 90.0]°
+[StandupEnv] num_envs=64  obs=13  act=2  episode=20 s  success_required=1000000000 steps  cg_gains=fixed  wheel_actuator=mujoco_torque
+[PureNNBalanceEnv] pure NN current controller active, dt=0.015s, obs=13, act=2, I_max=2.00A, curriculum_stage=1
+ACTIVE RANDOMIZATION SUMMARY
+motor gain: active, range (0.97, 1.03)
+motor deadzone: active, range (0.031, 0.078) A
+obs delay: values (0, 1) policy steps
+action delay: values (0, 1) policy steps
+wheel viscous damping: active, range (0.0007, 0.0007) Nm*s/rad
+ground static/dynamic friction: active per-episode on the robot material (see below)
+mass/COM/inertia/wheel radius: inactive
+NN DRIVE EXTRA RANDOMIZATION
+body mass/inertia scale: active, range (0.85, 1.15)
+platform COM offset: active, y (fore/aft) (0.0, 0.0) m, z (-0.01, 0.015) m
+odometry scale (obs): active, range (0.97, 1.03)
+pitch-rate gyro bias: active, range (-0.03, 0.03) rad/s
+yaw-rate gyro bias: active, range (-0.03, 0.03) rad/s
+cybergear kp/kd: active, ranges (30.0, 30.0) / (3.0, 3.0)
+cybergear calibration bias: active, range (-0.017453292519943295, 0.017453292519943295) rad
+force noise: active, amp (0.0, 0.6) N
+contact friction: active per-episode (effective tire/floor), static (0.5, 1.1), dynamic (0.4, 0.9) (dynamic <= static), pool of 64
+prev-current observation source: command
+observation delay mode: sensors
+obs delay steps: (0, 1), action delay steps: (0, 1)
+[NNDriveEnv] joystick drive controller active, dt=0.015s, obs=13, act=2, terrain=flat, curriculum_stage=1, leg_actions=fixed, v_max=0.15 m/s, w_max=0.00 rad/s
+[PureNNBalanceEnv] reset randomization sample #1
+  env_ids=[0, 1, 2, 3]
+  wheel_viscous_damping_LR=[[0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555]]
+  motor_gain_LR=[[0.9713522791862488, 1.0063589811325073], [0.9964589476585388, 1.0046323537826538], [0.9822465777397156, 1.0014467239379883], [0.9924975633621216, 1.0013102293014526]]
+  motor_deadzone_LR=[[0.057054292410612106, 0.05040363222360611], [0.06442100554704666, 0.04253728315234184], [0.05979214981198311, 0.057558778673410416], [0.053235869854688644, 0.07083519548177719]]
+[verify] PASS friction: one pair per env across all shapes 
+[verify] PASS friction: varies across envs unique static=42
+[verify] PASS friction: static in range min=0.520 max=1.096
+[verify] PASS friction: dynamic <= static dyn min=0.406 max=0.843
+[verify] PASS friction: recorded == applied 
+[verify] PASS friction: ground neutral 1.0/1.0 
+[PureNNBalanceEnv] reset randomization sample #2
+  env_ids=[0, 1, 2, 3]
+  wheel_viscous_damping_LR=[[0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555]]
+  motor_gain_LR=[[0.9700921177864075, 0.9719810485839844], [1.0293149948120117, 1.0119632482528687], [0.9982203841209412, 1.0290902853012085], [0.9827841520309448, 0.9951459169387817]]
+  motor_deadzone_LR=[[0.04405495524406433, 0.06408374011516571], [0.041521839797496796, 0.03562714532017708], [0.07128973305225372, 0.031387828290462494], [0.03875280171632767, 0.05975060537457466]]
+[verify] PASS friction: resampled on reset 
+[33m13:36:30 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+[verify] PASS motor: no lag, command = g*i - dz in the same step max err=1.19e-07
+[verify] PASS motor: no tau/bias/limit attributes 
+[verify] PASS damping: wheels at 0.0007 [0.000699999975040555, 0.000699999975040555]
+[verify] PASS cybergear: kp=30, kd=3 everywhere 
+[verify] PASS COM fore-aft offset zero 
+[verify] PASS reward: no position_far term 
+[verify] PASS reward: cg terms zero 
+[verify] PASS obs[9:10] == policy command / 2 obs=[0.4999999701976776, 0.4999999701976776] cmd=[0.9999999403953552, 0.9999999403953552]
+[verify] PASS limiter: left == right == 270 rpm envelope left=1.434 right=1.434 (expect 1.434)
+[verify] PASS limiter: braking not derated on either wheel left=2.000 right=2.000
+[PureNNBalanceEnv] reset randomization sample #3
+  env_ids=[0, 1, 2, 3]
+  wheel_viscous_damping_LR=[[0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555], [0.000699999975040555, 0.000699999975040555]]
+  motor_gain_LR=[[1.0271011590957642, 0.9921788573265076], [0.9968464374542236, 1.0058703422546387], [0.9946560263633728, 1.0093154907226562], [1.0254799127578735, 0.9762579798698425]]
+  motor_deadzone_LR=[[0.03749673441052437, 0.04894961789250374], [0.03469883278012276, 0.034778084605932236], [0.04908351972699165, 0.04185643047094345], [0.046015795320272446, 0.0767931118607521]]
+[verify] PASS delays: (0,0) gives no delay 
+[verify] PASS delays: (0,1) gives a mix action-delay fraction 0.50
+[verify] PASS sensor delay: pitch retains preceding measurement 
+[verify] PASS sensor delay: previous command remains one tick old 
+[verify] PASS sensor delay: command references remain current 
+[verify] PASS sensor delay: delayed heading uses current yaw reference 
+[verify] PASS sensor delay: first observation has valid heading pair 
+[verify] PASS sensor delay: partial reset clears only that sensor history 
+[verify] PASS legacy full delay: reproduces preceding complete observation 
+[INFO]: Parsing configuration from: TwoWheeledRobot.tasks.direct.twowheeledrobot.agents.rsl_rl_nn_drive_cfg:NNDriveFixedStancePPORunnerCfg
+[verify] PASS Template-Twowheeledrobot-NNDriveFixedStance-v0: restored exploration floor floor=[0.15, 0.15]
+/isaac-sim/kit/python/lib/python3.11/site-packages/rsl_rl/utils/utils.py:245: UserWarning: The observation configuration dictionary 'obs_groups' must contain the 'policy' key. As an observation group with the name 'policy' was found, this is assumed to be the observation set. Consider adding the 'policy' key to the 'obs_groups' dictionary for clarity. This behavior will be removed in a future version.
+  warnings.warn(
+/isaac-sim/kit/python/lib/python3.11/site-packages/rsl_rl/utils/utils.py:291: UserWarning: The observation configuration dictionary 'obs_groups' must contain the 'critic' key. As the configuration for 'critic' is missing, the observations from the 'policy' set are used. Consider adding the 'critic' key to the 'obs_groups' dictionary for clarity. This behavior will be removed in a future version.
+  warnings.warn(
+--------------------------------------------------------------------------------
+Resolved observation sets: 
+	 policy :  ['policy']
+	 critic :  ['policy']
+--------------------------------------------------------------------------------
+Actor MLP: MLP(
+  (0): Linear(in_features=13, out_features=64, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=64, out_features=64, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=64, out_features=2, bias=True)
+)
+Critic MLP: MLP(
+  (0): Linear(in_features=13, out_features=128, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=128, out_features=128, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=128, out_features=1, bias=True)
+)
+[verify] NNDriveFixedStance: actor params 5186, std floor [0.15, 0.15]
+[INFO]: Parsing configuration from: TwoWheeledRobot.tasks.direct.twowheeledrobot.agents.rsl_rl_nn_drive_cfg:NNDriveFixedStanceGRUPPORunnerCfg
+[verify] PASS Template-Twowheeledrobot-NNDriveFixedStanceGRU-v0: restored exploration floor floor=[0.15, 0.15]
+--------------------------------------------------------------------------------
+Resolved observation sets: 
+	 policy :  ['policy']
+	 critic :  ['policy']
+--------------------------------------------------------------------------------
+Actor RNN: Memory(
+  (rnn): GRU(13, 64)
+)
+Actor MLP: MLP(
+  (0): Linear(in_features=64, out_features=64, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=64, out_features=64, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=64, out_features=2, bias=True)
+)
+Critic RNN: Memory(
+  (rnn): GRU(13, 64)
+)
+Critic MLP: MLP(
+  (0): Linear(in_features=64, out_features=128, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=128, out_features=128, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=128, out_features=1, bias=True)
+)
+[verify] NNDriveFixedStanceGRU: actor params 23618, std floor [0.15, 0.15]
+[INFO]: Parsing configuration from: TwoWheeledRobot.tasks.direct.twowheeledrobot.agents.rsl_rl_nn_drive_cfg:NNDriveFixedStanceWidePPORunnerCfg
+[verify] PASS Template-Twowheeledrobot-NNDriveFixedStanceWide-v0: restored exploration floor floor=[0.15, 0.15]
+--------------------------------------------------------------------------------
+Resolved observation sets: 
+	 policy :  ['policy']
+	 critic :  ['policy']
+--------------------------------------------------------------------------------
+Actor MLP: MLP(
+  (0): Linear(in_features=13, out_features=145, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=145, out_features=145, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=145, out_features=2, bias=True)
+)
+Critic MLP: MLP(
+  (0): Linear(in_features=13, out_features=128, bias=True)
+  (1): ReLU()
+  (2): Linear(in_features=128, out_features=128, bias=True)
+  (3): ReLU()
+  (4): Linear(in_features=128, out_features=1, bias=True)
+)
+[verify] NNDriveFixedStanceWide: actor params 23492, std floor [0.15, 0.15]
+[verify] PASS wide actor within 1% of GRU actor 
+[verify] PASS hold drift: reference stays while holding drift term -0.250 (0.5 m -> -0.25)
+[verify] PASS hold drift: no hold while commanded 
+[verify] PASS hold drift: re-latched where the new hold began ref-pos gap 0.00e+00 m, drift term 0.00e+00
+[verify] DONE failures=[]
+Loading user config located at: '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/user.config.json'
+[Info] [carb] Logging to file: /isaac-sim/kit/logs/Kit/Isaac-Sim/5.1/kit_20261007_133624.log
+2026-10-07T13:36:24Z [0ms] [Warning] [carb.crashreporter-breakpad.plugin] [previous crash] preventing upload of minidump due to user opt-out: '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/8e927a3f-1ce7-4581-9e726ca8-b08c1cf6.dmp'
+2026-10-07T13:36:24Z [0ms] [Warning] [carb.crashreporter-breakpad.plugin] [previous crash] preventing upload of minidump due to user opt-out: '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/6f80bc5e-e765-443d-2ac9eaa7-e1acb803.dmp'
+2026-10-07T13:36:24Z [0ms] [Warning] [carb.crashreporter-breakpad.plugin] [previous crash] preventing upload of minidump due to user opt-out: '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/43af6bb7-1f69-4ca5-4b04d890-41b5b5ff.dmp'
+2026-10-07T13:36:24Z [1ms] [Warning] [carb.crashreporter-breakpad.plugin] [previous crash] preventing upload of minidump due to user opt-out: '/isaac-sim/kit/data/Kit/Isaac-Sim/5.1/a45998c3-2d2c-48e6-cca90b98-e40bf0f7.dmp'
+2026-10-07T13:36:25Z [279ms] [Warning] [omni.usd_config.extension] Enable omni.materialx.libs extension to use MaterialX
+2026-10-07T13:36:25Z [570ms] [Warning] [carb] Acquiring non optional plugin interface which is not listed as dependency: [omni::physx::IPhysxBenchmarks v1.0] (plugin: <default plugin>), by client: omni.physics.physx.plugin. Add it to CARB_PLUGIN_IMPL_DEPS() macro of a client.
+2026-10-07T13:36:25Z [710ms] [Warning] [omni.isaac.dynamic_control] omni.isaac.dynamic_control is deprecated as of Isaac Sim 4.5. No action is needed from end-users.
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 580.178.04    | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA GeForce RTX 5080          | Yes: 0 |     | 16549   MB | 10de      | 0          |
+|     |                                  |        |     |            | 2c02      | 8bf44253.. |
+|     |                                  |        |     |            | 1         |            |
+|=============================================================================================|
+| OS: 24.04.2 LTS (Noble Numbat) ubuntu, Version: 24.04.2, Kernel: 7.0.0-38-generic
+| XServer Vendor: The X.Org Foundation, XServer Version: 12302006 (1.23.2.6)
+| Processor: Intel(R) Core(TM) i9-14900KF
+| Bare Metal Cores: 24 | Bare Metal Logical Cores: 48
+| Available Cores:  32 
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 64117 | Free Memory: 51840
+| Total Page/Swap (MB): 8191 | Free Page/Swap: 0
+|---------------------------------------------------------------------------------------------|
+2026-10-07T13:36:27Z [2,789ms] [Warning] [gpu.foundation.plugin] CPU performance profile is set to powersave. This profile sets the CPU to the lowest frequency reducing performance.
+2026-10-07T13:36:27Z [2,797ms] [Warning] [gpu.foundation.plugin] IOMMU is enabled.
+2026-10-07T13:36:30Z [6,047ms] [Warning] [omni.physx.plugin] USD stage detach not called, holding a loose ptr to a stage!
+2026-10-07T13:36:31Z [6,265ms] [Warning] [carb] Recursive unloadAllPlugins() detected!
