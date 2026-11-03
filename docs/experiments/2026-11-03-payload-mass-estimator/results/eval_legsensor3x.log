@@ -1,0 +1,37 @@
+[eval] hold / imu_wheels_legs_h32: fall 0.028, MAE 0.0461 kg, loaded rel 0.152, p95 0.145, empty before 0.033, after removal 0.033, jitter 0.0207, settle median 26.62 s
+  m=0.00: mean est 0.030  MAE 0.030  placement std 0.021  worst-cell bias 0.083
+  m=0.10: mean est 0.068  MAE 0.057  placement std 0.032  worst-cell bias 0.084
+  m=0.25: mean est 0.256  MAE 0.056  placement std 0.049  worst-cell bias 0.096
+  m=0.50: mean est 0.504  MAE 0.037  placement std 0.031  worst-cell bias 0.081
+  m=0.75: mean est 0.767  MAE 0.045  placement std 0.041  worst-cell bias 0.094
+  m=1.00: mean est 0.996  MAE 0.051  placement std 0.049  worst-cell bias 0.115
+  m=1.50: mean est 1.517  MAE 0.051  placement std 0.050  worst-cell bias 0.126
+  m=2.00: mean est 1.974  MAE 0.040  placement std 0.025  worst-cell bias 0.077
+[eval] hold / imu_wheels_h64: fall 0.028, MAE 0.1313 kg, loaded rel 0.316, p95 0.395, empty before 0.005, after removal 0.060, jitter 0.0339, settle median 30.00 s
+  m=0.00: mean est 0.021  MAE 0.021  placement std 0.044  worst-cell bias 0.228
+  m=0.10: mean est 0.105  MAE 0.085  placement std 0.076  worst-cell bias 0.154
+  m=0.25: mean est 0.276  MAE 0.118  placement std 0.117  worst-cell bias 0.251
+  m=0.50: mean est 0.533  MAE 0.117  placement std 0.083  worst-cell bias 0.182
+  m=0.75: mean est 0.759  MAE 0.156  placement std 0.127  worst-cell bias 0.219
+  m=1.00: mean est 1.052  MAE 0.178  placement std 0.147  worst-cell bias 0.374
+  m=1.50: mean est 1.528  MAE 0.157  placement std 0.127  worst-cell bias 0.333
+  m=2.00: mean est 1.760  MAE 0.240  placement std 0.089  worst-cell bias 0.454
+[eval] drive / imu_wheels_legs_h32: fall 0.040, MAE 0.0473 kg, loaded rel 0.165, p95 0.133, empty before 0.033, after removal 0.033, jitter 0.0221, settle median 27.60 s
+  m=0.00: mean est 0.035  MAE 0.035  placement std 0.034  worst-cell bias 0.144
+  m=0.10: mean est 0.076  MAE 0.063  placement std 0.045  worst-cell bias 0.110
+  m=0.25: mean est 0.273  MAE 0.060  placement std 0.046  worst-cell bias 0.112
+  m=0.50: mean est 0.520  MAE 0.043  placement std 0.040  worst-cell bias 0.112
+  m=0.75: mean est 0.758  MAE 0.046  placement std 0.032  worst-cell bias 0.060
+  m=1.00: mean est 1.001  MAE 0.042  placement std 0.026  worst-cell bias 0.072
+  m=1.50: mean est 1.501  MAE 0.050  placement std 0.051  worst-cell bias 0.101
+  m=2.00: mean est 1.970  MAE 0.039  placement std 0.032  worst-cell bias 0.107
+[eval] drive / imu_wheels_h64: fall 0.040, MAE 0.1394 kg, loaded rel 0.316, p95 0.419, empty before 0.005, after removal 0.032, jitter 0.0522, settle median 30.00 s
+  m=0.00: mean est 0.012  MAE 0.012  placement std 0.012  worst-cell bias 0.065
+  m=0.10: mean est 0.080  MAE 0.072  placement std 0.064  worst-cell bias 0.166
+  m=0.25: mean est 0.285  MAE 0.115  placement std 0.107  worst-cell bias 0.253
+  m=0.50: mean est 0.532  MAE 0.149  placement std 0.127  worst-cell bias 0.312
+  m=0.75: mean est 0.770  MAE 0.180  placement std 0.140  worst-cell bias 0.265
+  m=1.00: mean est 0.997  MAE 0.189  placement std 0.158  worst-cell bias 0.425
+  m=1.50: mean est 1.488  MAE 0.168  placement std 0.132  worst-cell bias 0.290
+  m=2.00: mean est 1.742  MAE 0.259  placement std 0.116  worst-cell bias 0.606
+[eval] wrote outputs/payload_mass/eval_legsensor3x

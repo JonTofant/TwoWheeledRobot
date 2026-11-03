@@ -78,3 +78,16 @@ gym.register(
         "rsl_rl_cfg_entry_point": (f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDriveFixedStanceWidePPORunnerCfg"),
     },
 )
+
+# Experiment only (experiment/payload-mass-estimator): fixed-stance drive task with
+# an object placed on the platform, driven by the frozen hardware GRU, for training
+# and evaluating a separate payload-mass estimator. Never trained against by PPO.
+gym.register(
+    id="Template-Twowheeledrobot-NNDrivePayload-v0",
+    entry_point=f"{__name__}.nn_drive_payload_env:NNDrivePayloadEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.nn_drive_payload_env_cfg:NNDrivePayloadEnvCfg",
+        "rsl_rl_cfg_entry_point": (f"{agents.__name__}.rsl_rl_nn_drive_cfg:NNDriveFixedStanceGRUPPORunnerCfg"),
+    },
+)
