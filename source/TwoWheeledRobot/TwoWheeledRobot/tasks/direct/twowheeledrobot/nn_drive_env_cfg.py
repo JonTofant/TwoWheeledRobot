@@ -453,6 +453,18 @@ class NNDriveEnvCfg(PureNNBalanceEnvCfg):
     com_offset_y_range_m: tuple = (-0.005, 0.005)  # fore/aft platform COM shift (trim error)
     com_offset_z_range_m: tuple = (-0.010, 0.015)  # vertical COM shift
     odometry_scale_range: tuple = (0.97, 1.03)  # wheel-radius error seen by obs only
+    # Two real-plant effects, both off by default so existing tasks are unchanged.
+    # See docs/experiments/2026-11-05-hardware-regression-mujoco.
+    # Wheel Coulomb friction per wheel (Nm), per-episode. Unlike the current
+    # deadzone it opposes wheel motion whether or not current is commanded.
+    # ASSUMED, not IDENTIFIED, for paper section 2.4: 0.03 Nm is a closed-loop fit
+    # to telemetry, not a bench measurement, so the range brackets it widely.
+    wheel_coulomb_friction_nm_range: tuple = (0.0, 0.0)
+    wheel_coulomb_velocity_scale_radps: float = 0.2  # tanh smoothing, explicit at 1 ms
+    # Motor-reported wheel velocity. "none": ideal plus velocity_noise_std.
+    # "ddsm115": the identified filter inside the motor (IDENTIFIED from telemetry,
+    # centroid ~131 ms in two independent captures) with 1 rpm output steps.
+    velocity_obs_filter: str = "none"
     pitch_bias_rad_range: tuple = (math.radians(-3.0), math.radians(3.0))  # IMU mounting error
     payload_pitch_torque_nm_range: tuple = (-0.4, 0.4)  # persistent COM-shift torque
     pitch_rate_bias_radps_range: tuple = (-0.03, 0.03)  # gyro bias

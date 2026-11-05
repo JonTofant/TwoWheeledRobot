@@ -48,6 +48,14 @@ from .sim_params import (
 )
 
 
+# Impulse response of the velocity a DDSM115 reports, per 15 ms tick, least-squares fit of
+# reported velocity on d(encoder)/dt (r2 0.999; range_gru_segmented.csv, C_pilot_test.csv).
+DDSM115_REPORTED_VELOCITY_FIR = (
+    0.0, 0.036, 0.059, 0.089, 0.104, 0.105, 0.085, 0.075, 0.065, 0.054, 0.047, 0.042, 0.033, 0.032, 0.025,
+    0.020, 0.022, 0.015, 0.013, 0.012, 0.012, 0.010, 0.008, 0.006, 0.005, 0.005, 0.005, 0.003, 0.004, 0.005,
+)
+
+
 class NNDriveEnv(PureNNBalanceEnv):
     cfg: NNDriveEnvCfg
 
@@ -85,6 +93,11 @@ class NNDriveEnv(PureNNBalanceEnv):
         # commands or previous policy outputs as if they were sensor readings.
         self._drive_sensor_delay = torch.zeros(self.num_envs, 12, device=self.device)
         self._drive_sensor_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._wheel_coulomb_nm = torch.zeros(self.num_envs, 2, device=self.device)
+        self._reported_vel_fir = torch.tensor(DDSM115_REPORTED_VELOCITY_FIR, device=self.device)
+        self._reported_vel_fir = self._reported_vel_fir / self._reported_vel_fir.sum()
+        self._reported_vel_hist = torch.zeros(self.num_envs, len(DDSM115_REPORTED_VELOCITY_FIR), 2, device=self.device)
+        self._reported_vel_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Per-episode sensor-model randomization state.
         self._odometry_scale = torch.ones(self.num_envs, device=self.device)
@@ -349,8 +362,13 @@ class NNDriveEnv(PureNNBalanceEnv):
             -self._wheel_tau_speed_limit,
             torch.minimum(self._wheel_tau_current, self._wheel_tau_speed_limit),
         )
-        self._efforts_buf[:, 0] = -self._wheel_torque_cmd[:, 0]
-        self._efforts_buf[:, 1] = self._wheel_torque_cmd[:, 1]
+        # Coulomb friction acts on logical wheel velocity, with or without current.
+        coulomb = self._wheel_coulomb_nm * torch.tanh(
+            self._wheel_velocity_used / self.cfg.wheel_coulomb_velocity_scale_radps
+        )
+        wheel_torque = self._wheel_torque_cmd - coulomb
+        self._efforts_buf[:, 0] = -wheel_torque[:, 0]
+        self._efforts_buf[:, 1] = wheel_torque[:, 1]
         self.robot.set_joint_effort_target(self._efforts_buf, joint_ids=self._wheel_ids)
         self.robot.write_data_to_sim()
 
@@ -372,6 +390,10 @@ class NNDriveEnv(PureNNBalanceEnv):
         roll_rate_m = roll_rate + self._roll_rate_bias + torch.randn_like(roll_rate) * self.cfg.pitch_rate_noise_std
         yaw_rate_m = yaw_rate + self._yaw_rate_bias + torch.randn_like(yaw_rate) * self.cfg.yaw_rate_noise_std
         velocity_m = velocity * self._odometry_scale + torch.randn_like(velocity) * self.cfg.velocity_noise_std
+        if self.cfg.velocity_obs_filter == "ddsm115":
+            velocity_m = self._reported_velocity() * self._odometry_scale
+        elif self.cfg.velocity_obs_filter != "none":
+            raise ValueError(f"Unsupported velocity_obs_filter: {self.cfg.velocity_obs_filter!r}")
         x_m = x_rel * self._odometry_scale
 
         cg_pos = self.robot.data.joint_pos[:, self._cg_ids]
@@ -421,6 +443,18 @@ class NNDriveEnv(PureNNBalanceEnv):
             obs = torch.where(self._obs_delay_samples.view(-1, 1) > 0, self._obs_delay, self._obs_now)
         self._obs_delay = self._obs_now.clone()
         return {"policy": obs}
+
+    def _reported_velocity(self) -> torch.Tensor:
+        """Forward velocity as the DDSM115 reports it: filtered inside the motor, 1 rpm steps."""
+        wheel = self.robot.data.joint_vel[:, self._wheel_ids] * self._wheel_sign
+        first = ~self._reported_vel_valid
+        self._reported_vel_hist = torch.roll(self._reported_vel_hist, 1, dims=1)
+        self._reported_vel_hist[:, 0] = wheel
+        self._reported_vel_hist[first] = wheel[first].unsqueeze(1)
+        self._reported_vel_valid[:] = True
+        filtered = (self._reported_vel_hist * self._reported_vel_fir.view(1, -1, 1)).sum(dim=1)
+        rpm_step = 2.0 * math.pi / 60.0
+        return 0.5 * (torch.round(filtered / rpm_step) * rpm_step).sum(dim=1) * R_WHEEL
 
     def _previous_current_observation(self) -> torch.Tensor:
         """Observation [prev wheel current], in the logical (pre-wiring) convention.
@@ -542,6 +576,7 @@ class NNDriveEnv(PureNNBalanceEnv):
 
         self._drive_sensor_delay[env_ids_t] = 0.0
         self._drive_sensor_valid[env_ids_t] = False
+        self._reported_vel_valid[env_ids_t] = False
 
         # Re-place the robot on its terrain origin with a random heading. The
         # parent reset already placed it on the (flat) scene grid; terrain
@@ -587,6 +622,9 @@ class NNDriveEnv(PureNNBalanceEnv):
         self._commands.reset(env_ids_t, self.cfg.curriculum_stage, self.step_dt, yaw)
         self._cg_processor.reset(env_ids_t)
         self._odometry_scale[env_ids_t] = torch.empty(n, device=self.device).uniform_(*self.cfg.odometry_scale_range)
+        self._wheel_coulomb_nm[env_ids_t] = torch.empty(n, 2, device=self.device).uniform_(
+            *self.cfg.wheel_coulomb_friction_nm_range
+        )
         self._pitch_rate_bias[env_ids_t] = torch.empty(n, device=self.device).uniform_(
             *self.cfg.pitch_rate_bias_radps_range
         )
