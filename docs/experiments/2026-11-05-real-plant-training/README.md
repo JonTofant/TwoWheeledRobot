@@ -10,6 +10,11 @@ wobble to about half of the August GRU, on two independent plants. The warm star
 
 The first candidate is `fresh_command` `model_1200.pt`, exported to `ExportedPolicy/real_plant_s43_2026-11-06/primary_cmd_1200`.
 
+Commit `fb745b5` names `model 1125` as selected in its message. That is superseded: `cmd 1200` is primary, chosen for equal
+pitch SD, 2-3 times less current switching and a passing export, on the condition that the first test uses a centred deck.
+Its export was rechecked independently: closed-loop MuJoCo pitch SD 1.09 deg for the ONNX and 1.10 for the checkpoint, and
+ONNX against STM32 graph within 2.5e-7 A over 60 s of realistic observations.
+
 | Check | AUG 775 | cmd 1200 (primary) | model 1125 (backup) |
 |---|---|---|---|
 | MuJoCo fit plant, pitch SD deg | 2.69 | 1.11 | 1.31 |
@@ -24,6 +29,8 @@ The first candidate is `fresh_command` `model_1200.pt`, exported to `ExportedPol
 | Isaac, speed at +0.30 m/s | 0.295 | 0.379 | 0.291 |
 | Isaac, speed at -0.30 m/s | -0.261 | -0.432 | -0.278 |
 | Command change per tick, MuJoCo / Isaac, A | 0.021 / 0.090 | 0.138 / 0.105 | 0.319 / 0.241 |
+| MuJoCo, 3-tick velocity spike of 3 m/s, falls | 0% | 33% | 0% |
+| MuJoCo, 10 ticks of zero observations, falls | 67% | 17% | 67% |
 | Export validation | n/a | passed | **failed** |
 
 MuJoCo figures use six held-out seeds, two starting pitches, 30 s. Isaac uses 128 envs, sampled friction 0.01-0.06 Nm
@@ -59,8 +66,13 @@ Same estimator on hardware logs (August GRU and C pilot): reported current follo
 gives a current lag of at most about 7 ms, so the 15 and 30 ms MuJoCo variants are pessimistic and 5 ms is the realistic
 one. At 15 ms and above the gap to August closes (1.38 vs 1.48 deg), but the logs do not support that much lag.
 
-Commanded chatter therefore reaches the wheels. The C pilot log also shows a body response peak near 16 Hz that the
-rigid MuJoCo model lacks. It rests on 5 s of data, but it is a reason to watch for vibration on the first run.
+Commanded chatter therefore reaches the wheels. Its effect on the structure is unknown: rigid MuJoCo cannot show it, and
+heat, noise and wear are unmeasured.
+
+There is no evidence of a structural resonance. A peak near 16 Hz appeared only in the derivative of gyro rate against
+command for the C pilot, from 5.3 s of closed-loop data (4 windows, the weakest coherence of its neighbours at that bin).
+Differentiating tilts the spectrum. The peak is absent from the gyro spectrum and from rate against command, and from
+125 s of August data. A bench chirp would settle the question.
 
 ## Limits
 
@@ -70,6 +82,8 @@ rigid MuJoCo model lacks. It rests on 5 s of data, but it is a reason to watch f
   reproduce the two hardware falls of the C pilot and the point MLP, so a clean MuJoCo run does not rule out a fall.
 - Friction 0.03 Nm is a closed-loop fit: ASSUMED for paper section 2.4. The velocity filter is IDENTIFIED. Neither is
   in Notion yet.
+- Six runs per glitch case, so those fall rates are coarse. Across the six `fresh_command` checkpoints tested, five fell
+  on the velocity spike. Ten ticks of random observations caused falls in 50-100% of runs for every policy, August included.
 - The `fresh_command` start-up falls happen within about 1 s at static leans near 5 deg or more. Isaac did not train on
   this and did not test it. Payload offset on the robot would be a test of exactly this.
 
@@ -77,6 +91,6 @@ rigid MuJoCo model lacks. It rests on 5 s of data, but it is a reason to watch f
 
 1. Flash `primary_cmd_1200/policy_drive_stm32ai.onnx`. Keep the August GRU as rollback.
 2. Start with the deck empty and centred, with a hand near the robot for the first seconds.
-3. Station keeping for 60 s, then log pitch SD, oscillation frequency and listen or feel for vibration near 16 Hz and motor heat.
+3. Station keeping for 60 s, then log pitch SD and oscillation frequency, and check for vibration and motor heat.
 4. Compare with the August GRU on 2026-11-03: 2.63 deg, 0.73 Hz.
 5. Only then drive at +-0.3 m/s (expect overshoot, up to -0.43 m/s) and try an off-centre payload.

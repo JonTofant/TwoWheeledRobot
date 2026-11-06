@@ -1,0 +1,5 @@
+Exported ExportedPolicy/real_plant_s43_2026-11-06/B_cmd_1200/policy_drive.onnx (outputs=2 + recurrent state (h_out[, c_out]) passed through unchanged, cg_lower_rad=[-0.17453292519943295, -1.5707963267948966, -1.5707963267948966, -0.17453292519943295], cg_upper_rad=[1.5707963267948966, 0.17453292519943295, 0.17453292519943295, 1.5707963267948966], i_max_a=2.0)
+ONNX validation passed: max_error=1.2159348e-05 < 0.0001
+Wrote ExportedPolicy/real_plant_s43_2026-11-06/B_cmd_1200/policy_drive_stm32ai.onnx
+Hidden state: [1,64] (64 float32 values)
+Sequential validation passed (256 steps): max_action_error=1.0788441e-05, max_state_error=1.1309981e-05
